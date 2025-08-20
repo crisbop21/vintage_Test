@@ -1,3 +1,10 @@
+# app.py — QOB (quarters-on-book) version with progress bar, fast pipeline, and integrity checks
+# - Plots vintage curves by QOB (quarter ageing), avoiding rising denominators from quarterly snapshots
+# - Uses an integer QOB calculation (no Period/QuarterEnd bugs)
+# - Optional Numba speed-up for per-loan cummax (falls back to pandas automatically)
+# - Summary-only PDF + Excel issue samples
+# - Vintage default summary: Cum_PD, Observation_Time (years), annualized default rate
+
 import os
 os.environ["NUMEXPR_MAX_THREADS"] = "8"  # keep pandas/numexpr reasonable
 
@@ -22,7 +29,7 @@ try:
 except Exception:
     NUMBA_OK = False
 
-st.set_page_config(page_title='Vintage Curves + Integrity (QOB Ultra-Fast)', layout='wide')
+st.set_page_config(page_title='Vintage Curves (QOB) + Integrity — Ultra-Fast', layout='wide')
 st.title('Vintage Default-Rate Evolution (QOB) & Data Integrity — Ultra-Fast')
 
 MAX_MB = 50
@@ -96,12 +103,21 @@ def add_vintage_mob(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def add_qob(df: pd.DataFrame) -> pd.DataFrame:
-    """Quarter-on-book (QOB): 1 for the first observation quarter of a loan, etc."""
+    """
+    Quarter-on-book (QOB) as a small integer.
+    QOB = (obs_year*4 + (obs_quarter-1)) - (orig_year*4 + (orig_quarter-1)) + 1
+    """
     df = df.copy()
-    oQ = df['Origination date'].dt.to_period('Q')
-    sQ = df['Observation date'].dt.to_period('Q')
-    df['QOB'] = (sQ - oQ).astype(int) + 1
-    df = df[df['QOB'] > 0]
+    oy = df['Origination date'].dt.year
+    oq = df['Origination date'].dt.quarter
+    sy = df['Observation date'].dt.year
+    sq = df['Observation date'].dt.quarter
+    o_code = oy * 4 + (oq - 1)
+    s_code = sy * 4 + (sq - 1)
+    qob = (s_code - o_code + 1)
+    df['QOB'] = pd.to_numeric(qob, errors='coerce')           # float with NaN where missing
+    df = df[df['QOB'].gt(0).fillna(False)]                    # keep positive
+    df['QOB'] = df['QOB'].astype('int16', copy=False)         # compact int
     return df
 
 # ---------- Content hash for caching DataFrames cheaply ----------
@@ -113,17 +129,15 @@ def _df_key(df: pd.DataFrame) -> str:
     sample = df[cols].head(200000) if len(df) > 200000 else df[cols]
     h = pd.util.hash_pandas_object(sample, index=True).values
     m = hashlib.blake2b(digest_size=16)
-    m.update(h.tobytes())
-    m.update(str(sample.shape).encode())
-    m.update(",".join(map(str, sample.columns)).encode())
+    m.update(h.tobytes()); m.update(str(sample.shape).encode()); m.update(",".join(map(str, sample.columns)).encode())
     return m.hexdigest()
 
 @st.cache_data(show_spinner=False, hash_funcs={pd.DataFrame: _df_key})
 def prepare_base_cached(raw_df: pd.DataFrame) -> pd.DataFrame:
-    """One-time heavy prep: normalize, types, Vintage, sort."""
+    """One-time heavy prep: normalize, types, Vintage/MOB, sort. Reused across UI tweaks."""
     dfn = normalize_columns(raw_df)
     dfn = ensure_types(dfn)
-    dfn = add_vintage_mob(dfn)  # sets Vintage + MOB (MOB used elsewhere)
+    dfn = add_vintage_mob(dfn)  # sets Vintage + MOB (MOB also used elsewhere)
     # compact dtypes
     dfn['Vintage'] = dfn['Vintage'].astype('category')
     dfn['Loan ID'] = dfn['Loan ID'].astype('category')
@@ -147,35 +161,23 @@ def load_full(file_bytes: bytes, sheet: str, header: int):
 if NUMBA_OK:
     @njit(cache=True, fastmath=True)
     def _cum_or_by_group(codes: np.ndarray, flags: np.ndarray) -> np.ndarray:
-        """
-        codes: int64 group codes per row (sorted by Loan ID then date)
-        flags: uint8 (0/1)
-        """
         n = flags.size
         out = np.empty(n, np.uint8)
-        if n == 0:
-            return out
-        prev = codes[0]
-        acc = flags[0] != 0
-        out[0] = 1 if acc else 0
+        if n == 0: return out
+        prev = codes[0]; acc = flags[0] != 0; out[0] = 1 if acc else 0
         for i in range(1, n):
             c = codes[i]
             if c != prev:
-                prev = c
-                acc = flags[i] != 0
+                prev = c; acc = flags[i] != 0
             else:
-                if flags[i] != 0:
-                    acc = True
+                if flags[i] != 0: acc = True
             out[i] = 1 if acc else 0
         return out
 else:
     def _cum_or_by_group(codes: np.ndarray, flags: np.ndarray) -> np.ndarray:
         s_codes = pd.Series(codes, copy=False)
         s_flags = pd.Series(flags, copy=False)
-        return (s_flags.groupby(s_codes, sort=False)
-                      .cummax()
-                      .astype(np.uint8)
-                      .to_numpy(copy=False))
+        return (s_flags.groupby(s_codes, sort=False).cummax().astype(np.uint8).to_numpy(copy=False))
 
 # -------- Progress helper --------
 def mk_progress_updater(bar, steps: int = 5) -> Callable[[str], None]:
@@ -190,7 +192,7 @@ def build_chart_data_fast_quarter(raw_df: pd.DataFrame, dpd_threshold: int, max_
                                   prog: Optional[Callable[[str], None]] = None) -> pd.DataFrame:
     if prog: prog("Preparing base dataset …")
     base = prepare_base_cached(raw_df)
-    base = add_qob(base)  # adds QOB
+    base = add_qob(base)  # adds numeric QOB
 
     if prog: prog("Computing default flags …")
     flags = (base['Days past due'].to_numpy(np.float32, copy=False) >= dpd_threshold).astype(np.uint8, copy=False)
@@ -215,20 +217,20 @@ def build_chart_data_fast_quarter(raw_df: pd.DataFrame, dpd_threshold: int, max_
         if prog: prog("No data to plot.")
         return pd.DataFrame()
 
-    if prog: prog("Preparing chart matrix …")
+    # enforce numeric QOB then compute matrix
+    agg['QOB'] = pd.to_numeric(agg['QOB'], errors='coerce').astype('int16')
     agg['default_rate'] = (agg['total_default'] / agg['total_loans']).astype('float32')
     max_q = min(int(agg['QOB'].max()), max_qob)
 
     wide = (agg.pivot(index='QOB', columns='Vintage', values='default_rate')
                .sort_index()
                .reindex(range(1, max_q+1)))
-    # light smoothing across quarters + enforce monotonicity
     wide = wide.rolling(2, 1, center=True).mean().cummax().astype('float32')
     wide.index.name = 'QOB'
     return wide
 
 # ---- ULTRA-FAST PLOTTING ----
-def plot_curves_fast(df_wide: pd.DataFrame, title: str, x_label: str = 'Deal Age'):
+def plot_curves_fast(df_wide: pd.DataFrame, title: str, x_label: str = 'Deal Age, quarters'):
     if df_wide.empty:
         st.info('Not enough data to plot.')
         return None
@@ -371,7 +373,7 @@ def run_integrity_checks(df: pd.DataFrame, dpd_threshold: int, gap_days: int = 1
     if curr_gt_orig.any():
         row_issues.append(dfn[curr_gt_orig].head(50).assign(issue='Current > Origination'))
 
-    # Default labeling consistency + QOB agg for vintage sanity
+    # Default labeling consistency + QOB aggregation for vintage sanity
     dfd = add_vintage_mob(dfn).sort_values(['Loan ID','Observation date'])
     dfd['is_def'] = (dfd['Days past due'] >= dpd_threshold).astype(np.uint8)
     dfd['is_def_cum'] = dfd.groupby('Loan ID', sort=False)['is_def'].cummax()
@@ -408,10 +410,10 @@ def run_integrity_checks(df: pd.DataFrame, dpd_threshold: int, gap_days: int = 1
     if incr_rows:
         vintage_issues.append(pd.DataFrame(incr_rows))
 
-    # Coverage at QOB1 (analogous to MOB1)
-    mob1 = agg[agg['QOB']==1].set_index('Vintage')['total_loans']
+    # Coverage at QOB1
+    qob1 = agg[agg['QOB']==1].set_index('Vintage')['total_loans']
     orig_counts = dfd_q.groupby('Vintage')['Loan ID'].nunique()
-    coverage = pd.DataFrame({'orig_loans': orig_counts}).join(mob1.rename('qob1_loans'), how='left')
+    coverage = pd.DataFrame({'orig_loans': orig_counts}).join(qob1.rename('qob1_loans'), how='left')
     coverage['qob1_coverage_%'] = 100 * (coverage['qob1_loans'] / coverage['orig_loans'])
     low_cov = coverage[coverage['qob1_coverage_%'].fillna(0) < 80]
     summary['Vintages with QOB1 coverage < 80%'] = int(len(low_cov))
@@ -453,39 +455,27 @@ def export_integrity_pdf(summary: dict, dataset_label: str = 'Full dataset') -> 
         fig = plt.figure(figsize=(8.27, 11.69))  # A4 portrait
         plt.axis('off')
         y = 0.95
-        plt.text(0.5, y, 'Data Integrity Report', ha='center', va='top', fontsize=18, weight='bold')
-        y -= 0.05
-        plt.text(0.5, y, f'Dataset: {dataset_label}', ha='center', va='top', fontsize=11)
-        y -= 0.05
-
+        plt.text(0.5, y, 'Data Integrity Report', ha='center', va='top', fontsize=18, weight='bold'); y -= 0.05
+        plt.text(0.5, y, f'Dataset: {dataset_label}', ha='center', va='top', fontsize=11); y -= 0.05
         bullets = []
         for k, v in summary.items():
-            if isinstance(v, list):
-                v = ', '.join(map(str, v[:12])) + (' …' if len(v) > 12 else '')
+            if isinstance(v, list): v = ', '.join(map(str, v[:12])) + (' …' if len(v) > 12 else '')
             bullets.append(f'• {k}: {v}')
         wrapped = []
         for line in bullets:
             wrapped.extend(textwrap.wrap(line, width=90))
         for line in wrapped:
-            plt.text(0.05, y, line, ha='left', va='top', fontsize=10)
-            y -= 0.03
-
-        pdf.savefig(fig, bbox_inches='tight')
-        plt.close(fig)
+            plt.text(0.05, y, line, ha='left', va='top', fontsize=10); y -= 0.03
+        pdf.savefig(fig, bbox_inches='tight'); plt.close(fig)
     return buf.getvalue()
 
 def export_issues_excel(row_issues: pd.DataFrame, vintage_issues: pd.DataFrame) -> bytes:
     out = BytesIO()
     with pd.ExcelWriter(out, engine='xlsxwriter') as xw:
-        if row_issues is not None and not row_issues.empty:
-            row_issues.to_excel(xw, index=False, sheet_name='Row issues')
-        else:
-            pd.DataFrame({'note':['No row-level issues sampled']}).to_excel(xw, index=False, sheet_name='Row issues')
-
-        if vintage_issues is not None and not vintage_issues.empty:
-            vintage_issues.to_excel(xw, index=False, sheet_name='Vintage issues')
-        else:
-            pd.DataFrame({'note':['No vintage-level issues']}).to_excel(xw, index=False, sheet_name='Vintage issues')
+        (row_issues if (row_issues is not None and not row_issues.empty)
+         else pd.DataFrame({'note':['No row-level issues sampled']})).to_excel(xw, index=False, sheet_name='Row issues')
+        (vintage_issues if (vintage_issues is not None and not vintage_issues.empty)
+         else pd.DataFrame({'note':['No vintage-level issues']})).to_excel(xw, index=False, sheet_name='Vintage issues')
     return out.getvalue()
 
 # ----------------------------
@@ -609,7 +599,7 @@ if uploaded:
 
     st.divider()
 
-    # Enhanced summary you requested
+    # Enhanced summary
     st.subheader('Unique loans & default summary by vintage')
     try:
         summary_df = compute_vintage_default_summary(chosen_df_raw, dpd_threshold=dpd_threshold)
@@ -623,7 +613,7 @@ if uploaded:
 
     st.divider()
 
-    # Vintage curves — QOB, ultra-fast with progress bar (THIS IS OPTION 1)
+    # Vintage curves — QOB, ultra-fast with progress bar (Option 1)
     st.subheader('Vintage curves (quarters-on-book)')
     try:
         prog_bar = st.progress(0.0, text="Initializing …")
