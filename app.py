@@ -1,4 +1,5 @@
 import os
+
 os.environ["NUMEXPR_MAX_THREADS"] = "8"  # keep pandas/numexpr reasonable
 
 import streamlit as st
@@ -37,6 +38,43 @@ RESERVED_COLS = {
 # ----------------------------
 # Helpers
 # ----------------------------
+def build_chart_data_fast_fixed_base(raw_df, dpd_threshold: int, max_mob: int = 60, prog=None, base="mob1"):
+    if prog: prog("Preparing base dataset …")
+    base_df = prepare_base_cached(raw_df)
+    flags = (base_df['Days past due'].to_numpy(np.float32, copy=False) >= dpd_threshold).astype(np.uint8, copy=False)
+    codes = base_df['Loan ID'].cat.codes.to_numpy(np.int64, copy=False)
+    is_def_cum = _cum_or_by_group(codes, flags)
+
+    if prog: prog("Aggregating cohorts …")
+    agg = (pd.DataFrame({
+            'Vintage': base_df['Vintage'].to_numpy(),
+            'MOB': base_df['MOB'].to_numpy(),
+            'is_def_cum': is_def_cum,
+            'LoanID': base_df['Loan ID'].to_numpy()
+          })
+          .groupby(['Vintage','MOB'], sort=False)
+          .agg(total_loans=('LoanID','nunique'),
+               total_default=('is_def_cum','sum'))
+          .reset_index())
+
+    if agg.empty: return pd.DataFrame()
+
+    # fixed denominators
+    if base == "orig":
+        denom = base_df.groupby('Vintage')['Loan ID'].nunique()
+    else:  # "mob1" default
+        denom = agg[agg['MOB']==1].set_index('Vintage')['total_loans']
+    agg = agg.join(denom.rename('denom'), on='Vintage')
+
+    agg['default_rate'] = (agg['total_default'] / agg['denom']).astype('float32')  # monotone by construction
+    max_month = min(int(agg['MOB'].max()), max_mob)
+    wide = (agg.pivot(index='MOB', columns='Vintage', values='default_rate')
+              .sort_index()
+              .reindex(range(1, max_month+1))) \
+           .interpolate('linear', limit_area='inside').rolling(3, 1, center=True).mean().cummax().astype('float32')
+    wide.index.name = 'MOB'
+    return wide
+
 def add_qob(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     oQ = df['Origination date'].dt.to_period('Q')
@@ -591,7 +629,8 @@ if uploaded:
     try:
         prog_bar = st.progress(0.0, text="Initializing …")
         upd = mk_progress_updater(prog_bar, steps=5)
-        df_plot_any = build_chart_data_fast(chosen_df_raw, dpd_threshold=dpd_threshold,max_qob=20, prog=upd)
+        df_plot_any = build_chart_data_fast_fixed_base(chosen_df_raw, dpd_threshold, max_mob=max_mob_show, prog=upd, base="mob1")
+
 
         if df_plot_any.empty:
             prog_bar.progress(1.0, text="No data to plot.")
@@ -614,4 +653,5 @@ if uploaded:
 
 else:
     st.caption('Upload an Excel to continue.')
+
 
