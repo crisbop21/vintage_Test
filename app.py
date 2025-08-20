@@ -37,6 +37,40 @@ RESERVED_COLS = {
 # ----------------------------
 # Helpers
 # ----------------------------
+def add_qob(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    oQ = df['Origination date'].dt.to_period('Q')
+    sQ = df['Observation date'].dt.to_period('Q')
+    df['QOB'] = (sQ - oQ).astype(int) + 1
+    return df[df['QOB'] > 0]
+
+def build_chart_data_fast_quarter(raw_df: pd.DataFrame, dpd_threshold: int, max_qob: int = 20, prog=None):
+    base = prepare_base_cached(raw_df)
+    base = add_qob(base)  # adds QOB
+    flags = (base['Days past due'].to_numpy(np.float32, copy=False) >= dpd_threshold).astype(np.uint8, copy=False)
+    codes = base['Loan ID'].cat.codes.to_numpy(np.int64, copy=False)
+    is_def_cum = _cum_or_by_group(codes, flags)
+    agg = (pd.DataFrame({
+              'Vintage': base['Vintage'].to_numpy(),  # already quarterly
+              'QOB': base['QOB'].to_numpy(),
+              'is_def_cum': is_def_cum,
+              'LoanID': base['Loan ID'].to_numpy()
+           })
+           .groupby(['Vintage','QOB'], sort=False)
+           .agg(total_loans=('LoanID','nunique'),
+                total_default=('is_def_cum','sum'))
+           .reset_index())
+    if agg.empty:
+        return pd.DataFrame()
+    agg['default_rate'] = (agg['total_default'] / agg['total_loans']).astype('float32')
+    max_q = min(int(agg['QOB'].max()), max_qob)
+    wide = (agg.pivot(index='QOB', columns='Vintage', values='default_rate')
+              .sort_index()
+              .reindex(range(1, max_q+1)))
+    # (optional) light smoothing across quarters
+    wide = wide.rolling(2, 1, center=True).mean().cummax().astype('float32')
+    wide.index.name = 'QOB'
+    return wide
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     key = {str(c).strip().lower(): c for c in df.columns}
     def find(*names):
@@ -557,7 +591,7 @@ if uploaded:
     try:
         prog_bar = st.progress(0.0, text="Initializing …")
         upd = mk_progress_updater(prog_bar, steps=5)
-        df_plot_any = build_chart_data_fast(chosen_df_raw, dpd_threshold=dpd_threshold, max_mob=max_mob_show, prog=upd)
+        df_plot_any = build_chart_data_fast(chosen_df_raw, dpd_threshold=dpd_threshold,max_qob=20, prog=upd)
 
         if df_plot_any.empty:
             prog_bar.progress(1.0, text="No data to plot.")
@@ -580,3 +614,4 @@ if uploaded:
 
 else:
     st.caption('Upload an Excel to continue.')
+
