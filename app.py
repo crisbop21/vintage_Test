@@ -652,7 +652,7 @@ if uploaded:
             "Default_rate_pa": "Annualized default rate",
             "Cum_PD": "Cum PD",
         })
-
+        disp["Cum PD (%)"] = disp["Cum PD"] * 100
         if pretty_ints:
             disp["Unique loans"] = disp["Unique loans"].map(lambda x: "" if pd.isna(x) else f"{int(x):,}")
             disp["Defaulted loans"] = disp["Defaulted loans"].map(lambda x: "" if pd.isna(x) else f"{int(x):,}")
@@ -660,7 +660,7 @@ if uploaded:
                 "Vintage": st.column_config.TextColumn("Vintage"),
                 "Unique loans": st.column_config.TextColumn("Unique loans"),
                 "Defaulted loans": st.column_config.TextColumn("Defaulted loans"),
-                "Cum PD": st.column_config.ProgressColumn("Cum PD", format="%.2f%%", min_value=0.0, max_value=1.0),
+                "Cum PD (%)": st.column_config.ProgressColumn("Cum PD (%)", format="%.2f%%", min_value=0.0, max_value=100.0),
                 "Obs Time (years)": st.column_config.NumberColumn("Obs Time (years)", format="%.2f"),
                 "Annualized default rate": st.column_config.NumberColumn("Annualized default rate", format="%.2f%%"),
             }
@@ -675,7 +675,7 @@ if uploaded:
             }
 
         st.dataframe(
-            disp[["Vintage","Unique loans","Defaulted loans","Cum PD","Obs Time (years)","Annualized default rate"]],
+            disp[["Vintage","Unique loans","Defaulted loans","Cum PD (%)","Obs Time (years)","Annualized default rate"]],
             use_container_width=True,
             hide_index=True,
             column_config=col_config,
@@ -728,4 +728,5 @@ if uploaded:
 
 else:
     st.caption('Upload an Excel to continue.')
+
 
