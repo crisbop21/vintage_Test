@@ -1,4 +1,3 @@
-
 # app.py — QOB (quarters-on-book) version with:
 # - Chart: X axis in MONTHS (QOB*3), Y axis in %
 # - Vintage table: nicer aesthetics, PD as %
@@ -8,7 +7,7 @@
 
 import os
 os.environ["NUMEXPR_MAX_THREADS"] = "8"
-from typing import Tuple, Dict
+
 import math
 import hashlib
 import textwrap
@@ -34,8 +33,7 @@ def cache_data_smart(**kwargs):
     try:
         from streamlit.runtime.scriptrunner import get_script_run_ctx
         if get_script_run_ctx() is None:
-            def passthrough(func):
-                return func
+            def passthrough(func): return func
             return passthrough
     except Exception:
         pass
@@ -175,12 +173,12 @@ def load_full(file_bytes: bytes, sheet: str, header: int):
 # Fast per-loan cumulative OR (Numba or pandas fallback)
 # ──────────────────────────────────────────────────────────────────────────────
 if NUMBA_OK:
+    from numba import njit
     @njit(cache=True, fastmath=True)
     def _cum_or_by_group(codes: np.ndarray, flags: np.ndarray) -> np.ndarray:
         n = flags.size
         out = np.empty(n, np.uint8)
-        if n == 0:
-            return out
+        if n == 0: return out
         prev = codes[0]; acc = flags[0] != 0; out[0] = 1 if acc else 0
         for i in range(1, n):
             c = codes[i]
@@ -256,22 +254,14 @@ def plot_curves_percent_with_months(df_wide: pd.DataFrame,
                                     title: str,
                                     show_legend: bool = True,
                                     legend_limit: int = 40):
-    """
-    Plots vintage curves with:
-      - X axis in months (MOB if available, else QOB*3)
-      - Y axis as percentage
-    df_wide: index must be MOB or QOB; values are default rates in [0,1].
-    """
     if df_wide.empty:
         st.info('Not enough data to plot.')
         return None
 
-    # --- X axis in months ---
     idx = df_wide.index.to_numpy()
     name = (df_wide.index.name or "").upper()
     x_months = idx * 3 if name == "QOB" else idx  # MOB already months
 
-    # --- Optional downsample for speed when many points/lines ---
     Y = df_wide.to_numpy(dtype='float32')
     M, N = Y.shape
     target_points = 200_000
@@ -574,6 +564,11 @@ with st.sidebar:
     dpd_threshold = st.number_input('Default if Days past due ≥', min_value=1, max_value=365, value=90, step=1)
     max_months_show = st.slider('Show curves up to (months)', min_value=12, max_value=180, value=60, step=6)
     show_legend = st.checkbox('Show legend in chart', value=True)
+    pretty_ints = st.checkbox(
+        "Thousands separators for integer columns (pretty)",
+        value=False,
+        help="Shows 12,345 instead of 12345; disables numeric sorting on those two columns."
+    )
 
 if uploaded:
     size_mb = uploaded.size / (1024 * 1024)
@@ -644,85 +639,67 @@ if uploaded:
     st.divider()
 
     # ---- Vintage table (explicit formatting) ----
-with st.sidebar:
-    pretty_ints = st.checkbox(
-        "Thousands separators for integer columns (pretty)",
-        value=False,
-        help="Shows 12,345 instead of 12345; disables numeric sorting on those two columns."
-    )
+    st.subheader('Unique loans & default summary by vintage')
+    try:
+        summary_df = compute_vintage_default_summary(chosen_df_raw, dpd_threshold=dpd_threshold)
+        st.caption('Observation_Time = default date − first obs (if defaulted), else last obs − first obs (years).')
 
-st.subheader('Unique loans & default summary by vintage')
-try:
-    summary_df = compute_vintage_default_summary(chosen_df_raw, dpd_threshold=dpd_threshold)
-    st.caption('Observation_Time = default date − first obs (if defaulted), else last obs − first obs (years).')
+        # Rename only for display
+        disp = summary_df.rename(columns={
+            "Unique_loans": "Unique loans",
+            "Defaulted_loans": "Defaulted loans",
+            "Observation_Time": "Obs Time (years)",
+            "Default_rate_pa": "Annualized default rate",
+            "Cum_PD": "Cum PD",
+        })
 
-    # Rename only for display
-    disp = summary_df.rename(columns={
-        "Unique_loans": "Unique loans",
-        "Defaulted_loans": "Defaulted loans",
-        "Observation_Time": "Obs Time (years)",
-        "Default_rate_pa": "Annualized default rate",
-        "Cum_PD": "Cum PD",
-    })
+        if pretty_ints:
+            disp["Unique loans"] = disp["Unique loans"].map(lambda x: "" if pd.isna(x) else f"{int(x):,}")
+            disp["Defaulted loans"] = disp["Defaulted loans"].map(lambda x: "" if pd.isna(x) else f"{int(x):,}")
+            col_config = {
+                "Vintage": st.column_config.TextColumn("Vintage"),
+                "Unique loans": st.column_config.TextColumn("Unique loans"),
+                "Defaulted loans": st.column_config.TextColumn("Defaulted loans"),
+                "Cum PD": st.column_config.ProgressColumn("Cum PD", format="%.2f%%", min_value=0.0, max_value=1.0),
+                "Obs Time (years)": st.column_config.NumberColumn("Obs Time (years)", format="%.2f"),
+                "Annualized default rate": st.column_config.NumberColumn("Annualized default rate", format="%.2f%%"),
+            }
+        else:
+            col_config = {
+                "Vintage": st.column_config.TextColumn("Vintage"),
+                "Unique loans": st.column_config.NumberColumn("Unique loans", format="%d"),
+                "Defaulted loans": st.column_config.NumberColumn("Defaulted loans", format="%d"),
+                "Cum PD": st.column_config.ProgressColumn("Cum PD", format="%.2f%%", min_value=0.0, max_value=1.0),
+                "Obs Time (years)": st.column_config.NumberColumn("Obs Time (years)", format="%.2f"),
+                "Annualized default rate": st.column_config.NumberColumn("Annualized default rate", format="%.2f%%"),
+            }
 
-    # Optional pretty integers (strings with separators)
-    if pretty_ints:
-        disp["Unique loans"] = disp["Unique loans"].map(lambda x: "" if pd.isna(x) else f"{int(x):,}")
-        disp["Defaulted loans"] = disp["Defaulted loans"].map(lambda x: "" if pd.isna(x) else f"{int(x):,}")
+        st.dataframe(
+            disp[["Vintage","Unique loans","Defaulted loans","Cum PD","Obs Time (years)","Annualized default rate"]],
+            use_container_width=True,
+            hide_index=True,
+            column_config=col_config,
+        )
 
-        col_config = {
-            "Vintage": st.column_config.TextColumn("Vintage"),
-            "Unique loans": st.column_config.TextColumn("Unique loans"),
-            "Defaulted loans": st.column_config.TextColumn("Defaulted loans"),
-            "Cum PD": st.column_config.ProgressColumn("Cum PD", format="%.2f%%",
-                                                      min_value=0.0, max_value=1.0),   # RED → %
-            "Obs Time (years)": st.column_config.NumberColumn("Obs Time (years)", format="%.2f"),  # YELLOW → number
-            "Annualized default rate": st.column_config.NumberColumn("Annualized default rate", format="%.2f%%"),  # RED → %
-        }
-    else:
-        # keep integers numeric (sortable)
-        col_config = {
-            "Vintage": st.column_config.TextColumn("Vintage"),
-            "Unique loans": st.column_config.NumberColumn("Unique loans", format="%d"),            # YELLOW → number
-            "Defaulted loans": st.column_config.NumberColumn("Defaulted loans", format="%d"),      # YELLOW → number
-            "Cum PD": st.column_config.ProgressColumn("Cum PD", format="%.2f%%",
-                                                      min_value=0.0, max_value=1.0),               # RED → %
-            "Obs Time (years)": st.column_config.NumberColumn("Obs Time (years)", format="%.2f"),  # YELLOW → number
-            "Annualized default rate": st.column_config.NumberColumn("Annualized default rate", format="%.2f%%"),  # RED → %
-        }
-
-    st.dataframe(
-        disp[["Vintage","Unique loans","Defaulted loans","Cum PD","Obs Time (years)","Annualized default rate"]],
-        use_container_width=True,
-        hide_index=True,
-        column_config=col_config,
-    )
-
-    st.download_button(
-        'Download CSV (vintage default summary)',
-        summary_df.to_csv(index=False).encode('utf-8'),
-        'vintage_default_summary.csv','text/csv'
-    )
-except Exception as e:
-    st.info(f'Could not compute vintage default summary: {e}')
-
+        st.download_button(
+            'Download CSV (vintage default summary)',
+            summary_df.to_csv(index=False).encode('utf-8'),
+            'vintage_default_summary.csv','text/csv'
+        )
+    except Exception as e:
+        st.info(f'Could not compute vintage default summary: {e}')
 
     st.divider()
 
-    # Vintage curves — QOB engine, months axis, % y, legend
+    # ---- Vintage curves — QOB engine, months axis, % y, legend ----
     st.subheader('Vintage curves (months on axis; QOB engine for stable denominators)')
     try:
         prog_bar = st.progress(0.0, text="Initializing …")
         upd = mk_progress_updater(prog_bar, steps=5)
 
-        # Convert months slider → QOB cap
         max_qob_show = max(1, math.ceil(max_months_show / 3))
-
         df_plot_any = build_chart_data_fast_quarter(
-            chosen_df_raw,
-            dpd_threshold=dpd_threshold,
-            max_qob=max_qob_show,
-            prog=upd
+            chosen_df_raw, dpd_threshold=dpd_threshold, max_qob=max_qob_show, prog=upd
         )
 
         if df_plot_any.empty:
@@ -731,15 +708,14 @@ except Exception as e:
         else:
             prog_bar.progress(0.9, text="Rendering chart …")
             ttl = f'Vintage Default-Rate Evolution | DPD≥{dpd_threshold}'
-            fig = plot_curves_percent_with_months(
-                df_plot_any, title=ttl, show_legend=show_legend, legend_limit=50
-            )
+            fig = plot_curves_percent_with_months(df_wide=df_plot_any, title=ttl,
+                                                  show_legend=show_legend, legend_limit=50)
             prog_bar.progress(1.0, text="Done")
 
-            # CSV export (include months column)
             export_df = df_plot_any.reset_index().rename(columns={"QOB":"QOB"})
             export_df.insert(0, "Months", export_df["QOB"] * 3)
-            st.download_button('Download curves (CSV; Months + QOB)', export_df.to_csv(index=False).encode('utf-8'),
+            st.download_button('Download curves (CSV; Months + QOB)',
+                               export_df.to_csv(index=False).encode('utf-8'),
                                'vintage_curves_qob.csv','text/csv')
 
             if fig is not None:
@@ -752,7 +728,4 @@ except Exception as e:
 
 else:
     st.caption('Upload an Excel to continue.')
-
-
-
 
