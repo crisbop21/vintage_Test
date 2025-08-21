@@ -741,24 +741,13 @@ if uploaded:
                                export_df.to_csv(index=False).encode('utf-8'),
                                'vintage_curves_qob.csv','text/csv')
 
-             if fig is not None:
-                try:
-                    chrome = pio.kaleido.scope.chromium_executable
-                    chrome_ok = chrome and os.path.isfile(chrome)
-                except Exception:
-                    chrome_ok = False
-                if chrome_ok:
-                    img = fig.to_image(format='png', scale=2)
-                    st.download_button('Download chart (PNG)', img,
-                                       'vintage_curves_qob.png', 'image/png')
-                else:
-                    from plotly.io._kaleido import PLOTLY_GET_CHROME_ERROR_MSG
-                    st.info(f'{PLOTLY_GET_CHROME_ERROR_MSG} Skipping PNG export.')
+             
     except Exception as e:
         st.info(f'Plot skipped, {e}')
 
 else:
     st.caption('Upload an Excel to continue.')
+
 
 
 
