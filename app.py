@@ -8,7 +8,7 @@
 
 import os
 os.environ["NUMEXPR_MAX_THREADS"] = "8"
-
+from typing import Tuple, Dict
 import math
 import hashlib
 import textwrap
@@ -643,48 +643,69 @@ if uploaded:
 
     st.divider()
 
-    # Vintage table — PD as %, better aesthetics
-    st.subheader('Unique loans & default summary by vintage')
-    try:
-        summary_df = compute_vintage_default_summary(chosen_df_raw, dpd_threshold=dpd_threshold)
-        st.caption('Observation_Time = default date − first obs (if defaulted), else last obs − first obs (years).')
+    # ---- Vintage table (explicit formatting) ----
+with st.sidebar:
+    pretty_ints = st.checkbox(
+        "Thousands separators for integer columns (pretty)",
+        value=False,
+        help="Shows 12,345 instead of 12345; disables numeric sorting on those two columns."
+    )
 
-        try:
-            st.dataframe(
-                summary_df,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Vintage": st.column_config.TextColumn("Vintage"),
-                    "Unique_loans": st.column_config.NumberColumn("Unique loans", format="%,d"),
-                    "Defaulted_loans": st.column_config.NumberColumn("Defaulted loans", format="%,d"),
-                    "Cum_PD": st.column_config.ProgressColumn(
-                        "Cum PD", format="%.2f%%", min_value=0.0, max_value=1.0
-                    ),
-                    "Observation_Time": st.column_config.NumberColumn("Obs Time (years)", format="%.2f"),
-                    "Default_rate_pa": st.column_config.NumberColumn("Annualized default rate", format="%.2f%%"),
-                },
-            )
-        except TypeError:
-            show_df = summary_df.copy()
-            show_df["Cum PD (%)"] = (show_df["Cum_PD"] * 100).round(2)
-            show_df["Annualized default rate (%)"] = (show_df["Default_rate_pa"] * 100).round(2)
-            show_df = (show_df
-                       .drop(columns=["Cum_PD","Default_rate_pa"])
-                       .rename(columns={
-                           "Unique_loans":"Unique loans",
-                           "Defaulted_loans":"Defaulted loans",
-                           "Observation_Time":"Obs Time (years)"
-                       }))
-            st.dataframe(show_df, use_container_width=True, hide_index=True)
+st.subheader('Unique loans & default summary by vintage')
+try:
+    summary_df = compute_vintage_default_summary(chosen_df_raw, dpd_threshold=dpd_threshold)
+    st.caption('Observation_Time = default date − first obs (if defaulted), else last obs − first obs (years).')
 
-        st.download_button(
-            'Download CSV (vintage default summary)',
-            summary_df.to_csv(index=False).encode('utf-8'),
-            'vintage_default_summary.csv','text/csv'
-        )
-    except Exception as e:
-        st.info(f'Could not compute vintage default summary: {e}')
+    # Rename only for display
+    disp = summary_df.rename(columns={
+        "Unique_loans": "Unique loans",
+        "Defaulted_loans": "Defaulted loans",
+        "Observation_Time": "Obs Time (years)",
+        "Default_rate_pa": "Annualized default rate",
+        "Cum_PD": "Cum PD",
+    })
+
+    # Optional pretty integers (strings with separators)
+    if pretty_ints:
+        disp["Unique loans"] = disp["Unique loans"].map(lambda x: "" if pd.isna(x) else f"{int(x):,}")
+        disp["Defaulted loans"] = disp["Defaulted loans"].map(lambda x: "" if pd.isna(x) else f"{int(x):,}")
+
+        col_config = {
+            "Vintage": st.column_config.TextColumn("Vintage"),
+            "Unique loans": st.column_config.TextColumn("Unique loans"),
+            "Defaulted loans": st.column_config.TextColumn("Defaulted loans"),
+            "Cum PD": st.column_config.ProgressColumn("Cum PD", format="%.2f%%",
+                                                      min_value=0.0, max_value=1.0),   # RED → %
+            "Obs Time (years)": st.column_config.NumberColumn("Obs Time (years)", format="%.2f"),  # YELLOW → number
+            "Annualized default rate": st.column_config.NumberColumn("Annualized default rate", format="%.2f%%"),  # RED → %
+        }
+    else:
+        # keep integers numeric (sortable)
+        col_config = {
+            "Vintage": st.column_config.TextColumn("Vintage"),
+            "Unique loans": st.column_config.NumberColumn("Unique loans", format="%d"),            # YELLOW → number
+            "Defaulted loans": st.column_config.NumberColumn("Defaulted loans", format="%d"),      # YELLOW → number
+            "Cum PD": st.column_config.ProgressColumn("Cum PD", format="%.2f%%",
+                                                      min_value=0.0, max_value=1.0),               # RED → %
+            "Obs Time (years)": st.column_config.NumberColumn("Obs Time (years)", format="%.2f"),  # YELLOW → number
+            "Annualized default rate": st.column_config.NumberColumn("Annualized default rate", format="%.2f%%"),  # RED → %
+        }
+
+    st.dataframe(
+        disp[["Vintage","Unique loans","Defaulted loans","Cum PD","Obs Time (years)","Annualized default rate"]],
+        use_container_width=True,
+        hide_index=True,
+        column_config=col_config,
+    )
+
+    st.download_button(
+        'Download CSV (vintage default summary)',
+        summary_df.to_csv(index=False).encode('utf-8'),
+        'vintage_default_summary.csv','text/csv'
+    )
+except Exception as e:
+    st.info(f'Could not compute vintage default summary: {e}')
+
 
     st.divider()
 
@@ -731,6 +752,7 @@ if uploaded:
 
 else:
     st.caption('Upload an Excel to continue.')
+
 
 
 
