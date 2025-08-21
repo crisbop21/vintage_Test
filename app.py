@@ -301,7 +301,7 @@ def plot_curves_percent_with_months(df_wide: pd.DataFrame,
     fig.update_layout(
         title=title,
         xaxis_title='Deal Age (months)',
-        yaxis=dict(title='Cumulative default rate', tickformat='.0%'),
+        yaxis=dict(title='Cumulative default rate', tickformat='.2%'),
         hovermode='x unified',
         showlegend=show_leg,
     )
@@ -747,6 +747,7 @@ if uploaded:
 
 else:
     st.caption('Upload an Excel to continue.')
+
 
 
 
