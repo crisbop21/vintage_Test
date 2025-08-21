@@ -230,26 +230,58 @@ def build_chart_data_fast_quarter(raw_df: pd.DataFrame, dpd_threshold: int, max_
     return wide
 
 # ---- ULTRA-FAST PLOTTING ----
-def plot_curves_fast(df_wide: pd.DataFrame, title: str, x_label: str = 'Deal Age, quarters'):
+from matplotlib.ticker import PercentFormatter
+
+def plot_curves_percent_with_months(df_wide: pd.DataFrame,
+                                    title: str,
+                                    show_legend: bool = True,
+                                    legend_limit: int = 40):
+    """
+    Plots vintage curves with:
+      - X axis in months (MOB if available, else QOB*3)
+      - Y axis as percentage
+    df_wide: index must be MOB or QOB; values are default rates in [0,1].
+    """
     if df_wide.empty:
         st.info('Not enough data to plot.')
         return None
-    x = df_wide.index.to_numpy(dtype='int32')
+
+    # --- X axis in months ---
+    idx = df_wide.index.to_numpy()
+    name = (df_wide.index.name or "").upper()
+    x_months = idx * 3 if name == "QOB" else idx  # MOB already in months
+
+    # --- Optional auto downsample for speed when many points/lines ---
     Y = df_wide.to_numpy(dtype='float32')
     M, N = Y.shape
     target_points = 200_000
     step = max(1, int(np.ceil((M * N) / target_points)))
     if step > 1:
-        x = x[::step]
+        x_months = x_months[::step]
         Y = Y[::step, :]
+
+    # --- Plot ---
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(x, Y, linewidth=0.7, antialiased=False)
-    ax.set_xlabel(x_label)
+    lines = ax.plot(x_months, Y, linewidth=0.9, antialiased=False)
+
+    # Y axis as %
+    ax.yaxis.set_major_formatter(PercentFormatter(xmax=1.0))
     ax.set_ylabel('Cumulative default rate')
+
+    # X axis label
+    ax.set_xlabel('Deal Age (months)')
     ax.set_title(title)
-    fig.tight_layout(pad=0.5)
+
+    # Legend when manageable
+    if show_legend and (df_wide.shape[1] <= legend_limit):
+        for line, label in zip(lines, map(str, df_wide.columns)):
+            line.set_label(label)
+        ax.legend(title='Vintage', ncols=2, fontsize=8, frameon=False, loc='upper left')
+
+    fig.tight_layout(pad=0.4)
     st.pyplot(fig, clear_figure=True)
     return fig
+
 
 # ----------------------------
 # Integrity checks (vectorized)
@@ -527,7 +559,11 @@ if 'df_full' not in st.session_state:
 with st.sidebar:
     st.header('Settings')
     dpd_threshold = st.number_input('Default if Days past due ≥', min_value=1, max_value=365, value=90, step=1)
-    max_qob_show = st.slider('Show curves up to QOB (quarters)', min_value=4, max_value=40, value=20, step=2)
+    max_months_show = st.slider('Show curves up to (months)', min_value=12, max_value=180, value=60, step=6)
+
+# Later, if your chart builder expects QOB, convert:
+max_qob_show = max(1, int(np.ceil(max_months_show / 3)))
+
 
 if uploaded:
     size_mb = uploaded.size / (1024 * 1024)
@@ -601,15 +637,50 @@ if uploaded:
 
     # Enhanced summary
     st.subheader('Unique loans & default summary by vintage')
+try:
+    summary_df = compute_vintage_default_summary(chosen_df_raw, dpd_threshold=dpd_threshold)
+    st.caption('Observation_Time = default date − first obs (if defaulted), else last obs − first obs (years).')
+
+    # Prefer modern Streamlit with column_config (nice visuals)
     try:
-        summary_df = compute_vintage_default_summary(chosen_df_raw, dpd_threshold=dpd_threshold)
-        st.caption('Observation_Time = default date − first obs (if defaulted), else last obs − first obs. Units = years. Cum_PD = defaults / total loans.')
-        st.dataframe(summary_df, use_container_width=True)
-        csv_bytes = summary_df.to_csv(index=False).encode('utf-8')
-        st.download_button('Download CSV (vintage default summary)', csv_bytes,
-                           'vintage_default_summary.csv','text/csv')
-    except Exception as e:
-        st.info(f'Could not compute vintage default summary: {e}')
+        st.dataframe(
+            summary_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Vintage": st.column_config.TextColumn("Vintage"),
+                "Unique_loans": st.column_config.NumberColumn("Unique loans", format="%,d"),
+                "Defaulted_loans": st.column_config.NumberColumn("Defaulted loans", format="%,d"),
+                # PD as % with a progress bar (expects values in 0..1)
+                "Cum_PD": st.column_config.ProgressColumn("Cum PD", format="%.2f%%",
+                                                          min_value=0.0, max_value=1.0),
+                "Observation_Time": st.column_config.NumberColumn("Obs Time (years)", format="%.2f"),
+                "Default_rate_pa": st.column_config.NumberColumn("Annualized default rate", format="%.2f%%"),
+            },
+        )
+    except TypeError:
+        # Fallback for older Streamlit: precompute % columns
+        show_df = summary_df.copy()
+        show_df["Cum PD (%)"] = (show_df["Cum_PD"] * 100).round(2)
+        show_df["Annualized default rate (%)"] = (show_df["Default_rate_pa"] * 100).round(2)
+        show_df = (show_df
+                   .drop(columns=["Cum_PD","Default_rate_pa"])
+                   .rename(columns={
+                       "Unique_loans":"Unique loans",
+                       "Defaulted_loans":"Defaulted loans",
+                       "Observation_Time":"Obs Time (years)"
+                   }))
+        st.dataframe(show_df, use_container_width=True, hide_index=True)
+
+    # Download button (raw numeric values, not pretty-printed)
+    st.download_button(
+        'Download CSV (vintage default summary)',
+        summary_df.to_csv(index=False).encode('utf-8'),
+        'vintage_default_summary.csv','text/csv'
+    )
+except Exception as e:
+    st.info(f'Could not compute vintage default summary: {e}')
+
 
     st.divider()
 
@@ -632,7 +703,7 @@ if uploaded:
         else:
             prog_bar.progress(0.9, text="Rendering chart …")
             ttl = f'Vintage Default-Rate Evolution (QOB) | DPD≥{dpd_threshold}'
-            fig = plot_curves_fast(df_plot_any, ttl, x_label='Deal Age, quarters')
+            fig = plot_curves_percent_with_months(df_plot_any, title=f'Vintage Default-Rate Evolution | DPD≥{dpd_threshold}', show_legend=True)
             prog_bar.progress(1.0, text="Done")
 
             # Downloads
@@ -648,3 +719,4 @@ if uploaded:
 
 else:
     st.caption('Upload an Excel to continue.')
+
