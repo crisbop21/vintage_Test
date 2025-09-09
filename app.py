@@ -159,7 +159,7 @@ if density_mode == 'Compact':
         unsafe_allow_html=True,
     )
 
-st.title('Vintage Default-Rate Tool')
+st.markdown("<h1 style='text-align: center;'>Vintage Default-Rate Tool</h1>", unsafe_allow_html=True)
 
 MAX_MB = 50
 RESERVED_COLS = {
@@ -966,6 +966,7 @@ with right:
     else:
         st.caption('Upload an Excel to continue.')
         
+
 
 
 
