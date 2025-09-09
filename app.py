@@ -501,7 +501,7 @@ def run_integrity_checks(df: pd.DataFrame, dpd_threshold: int, gap_days: int = 1
     except Exception:
         pass
 
-   return summary, issues_df, vintage_issues_df
+    return summary, issues_df, vintage_issues_df
 
 # Human-readable descriptions for integrity checks
 CHECK_DESCRIPTIONS = {
