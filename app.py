@@ -751,7 +751,7 @@ with st.sidebar:
         "4. Explore the tabs for integrity checks, tables, and charts."
     )
 
-left, right = st.columns([1, 2])
+left, right = st.columns([0.5, 2.5])
 
 with left:
     st.header('Settings')
@@ -947,6 +947,7 @@ with right:
     else:
         st.caption('Upload an Excel to continue.')
         
+
 
 
 
