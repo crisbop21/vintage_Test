@@ -11,6 +11,7 @@ os.environ["NUMEXPR_MAX_THREADS"] = "8"
 import math
 import hashlib
 import textwrap
+import re
 from io import BytesIO
 from typing import Optional, Callable
 
@@ -500,7 +501,51 @@ def run_integrity_checks(df: pd.DataFrame, dpd_threshold: int, gap_days: int = 1
     except Exception:
         pass
 
-    return summary, issues_df, vintage_issues_df
+   return summary, issues_df, vintage_issues_df
+
+# Human-readable descriptions for integrity checks
+CHECK_DESCRIPTIONS = {
+    'Observation before Origination': 'Observation date occurs before origination date for a loan.',
+    'Maturity before Origination': 'Maturity date occurs before origination date.',
+    'Observation well after Maturity (> tol)': 'Observation date is far beyond maturity date.',
+    'Duplicate snapshots (Loan ID + Observation date)': 'Same loan has multiple rows with identical observation date.',
+    'Loans with multiple Origination dates': 'A loan appears with more than one origination date.',
+    'Loans with changing Maturity date': 'A loan shows different maturity dates across records.',
+    'Out-of-order snapshots': 'Observation dates are not in chronological order for a loan.',
+    'Large gaps in Observation': 'Long intervals between successive observations for a loan.',
+    'Negative Days past due': 'Days past due value is negative.',
+    'Non-integer DPD values': 'Days past due is not a whole number.',
+    'Extreme DPD (> 3650)': 'Days past due exceeds ten years.',
+    'Sudden cures (>=180 to 0 next)': 'DPD drops from ≥180 to 0 in the next snapshot.',
+    'Origination amount <= 0': 'Origination amount is non-positive.',
+    'Loans with changing Origination amount': 'Origination amount varies for the same loan.',
+    'Negative Current amount': 'Current amount is negative.',
+    'Current amount > Origination amount': 'Current amount exceeds the origination amount.',
+    'is_def_cum resets (should be 0)': 'Cumulative default flag decreases, which should not happen.',
+    'Vintage denominators increasing (count, QOB)': 'Number of loans grows with ageing, implying duplicates.',
+    'Vintages with QOB1 coverage < 80%': 'Vintages where fewer than 80% of loans have an initial snapshot.',
+    'Vintages with non-monotone raw default rate (QOB)': 'Default rate decreases between QOBs for a vintage.',
+    'Rows (total)': 'Total rows in dataset.',
+    'Distinct loans': 'Count of unique Loan ID values.',
+    'Date range (Origination)': 'Earliest and latest origination dates.',
+    'Date range (Observation)': 'Earliest and latest observation dates.',
+    'Date range (Maturity)': 'Earliest and latest maturity dates.',
+    'Years (Origination)': 'Distinct origination years present.',
+    'Years (Observation)': 'Distinct observation years present.',
+    'Years (Maturity)': 'Distinct maturity years present.',
+    'Vintages observed': 'Vintages represented after processing.'
+}
+
+def explain_check(name: str) -> str:
+    if name.startswith('Nulls in '):
+        col = name[len('Nulls in '):]
+        return f'Rows where {col} is missing.'
+    if name.startswith('Non-parsable '):
+        col = name[len('Non-parsable '):].split(' (')[0]
+        return f'Values in {col} could not be parsed to the required type.'
+    if name.startswith('Large gaps in Observation'):
+        return CHECK_DESCRIPTIONS['Large gaps in Observation']
+    return CHECK_DESCRIPTIONS.get(name, '')
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Exports
@@ -514,14 +559,26 @@ def export_integrity_pdf(summary: dict, dataset_label: str = 'Full dataset') -> 
         plt.text(0.5, y, 'Data Integrity Report', ha='center', va='top', fontsize=18, weight='bold'); y -= 0.05
         plt.text(0.5, y, f'Dataset: {dataset_label}', ha='center', va='top', fontsize=11); y -= 0.05
         bullets = []
+        explanations = []
         for k, v in summary.items():
-            if isinstance(v, list): v = ', '.join(map(str, v[:12])) + (' …' if len(v) > 12 else '')
+            if isinstance(v, list):
+                v = ', '.join(map(str, v[:12])) + (' …' if len(v) > 12 else '')
             bullets.append(f'• {k}: {v}')
+            desc = explain_check(k)
+            if desc:
+                explanations.append(f'• {k}: {desc}')
         wrapped = []
         for line in bullets:
             wrapped.extend(textwrap.wrap(line, width=90))
         for line in wrapped:
             plt.text(0.05, y, line, ha='left', va='top', fontsize=10); y -= 0.03
+        y -= 0.02
+        plt.text(0.5, y, 'Check explanations', ha='center', va='top', fontsize=12, weight='bold'); y -= 0.04
+        wrapped_desc = []
+        for line in explanations:
+            wrapped_desc.extend(textwrap.wrap(line, width=90))
+        for line in wrapped_desc:
+            plt.text(0.05, y, line, ha='left', va='top', fontsize=8, color='gray'); y -= 0.03
         pdf.savefig(fig, bbox_inches='tight'); plt.close(fig)
     return buf.getvalue()
 
@@ -747,6 +804,7 @@ if uploaded:
 
 else:
     st.caption('Upload an Excel to continue.')
+
 
 
 
