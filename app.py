@@ -665,24 +665,14 @@ uploaded = st.file_uploader('Upload a .xlsx file', type=['xlsx'], accept_multipl
 if 'df_full' not in st.session_state:
     st.session_state['df_full'] = None
 
-# Sidebar settings — in MONTHS
+# Sidebar settings shared across tabs
 with st.sidebar:
     st.header('Settings')
     dpd_threshold = st.number_input('Default if Days past due ≥', min_value=1, max_value=365, value=90, step=1)
-    max_months_show = st.slider('Show curves up to (months)', min_value=12, max_value=180, value=60, step=6)
-    show_legend = st.checkbox('Show legend in chart', value=True)
-    palette_option = st.selectbox('Color palette', ['Gradient', 'Plotly', 'Viridis'])
-    base_color = st.color_picker(
-        'Base chart color',
-        value=st.get_option("theme.primaryColor") or '#1f77b4',
-        help='Used when Gradient palette is selected.',
-    )
-    line_width = st.slider('Line width', min_value=1, max_value=5, value=1)
-
     pretty_ints = st.checkbox(
-        "Thousands separators for integer columns",
+        'Thousands separators for integer columns',
         value=False,
-        help="Shows 12,345 instead of 12345; disables numeric sorting on those two columns."
+        help='Shows 12,345 instead of 12345; disables numeric sorting on those two columns.',
     )
 
 if uploaded:
@@ -774,33 +764,29 @@ if uploaded:
             disp["Cum PD (%)"] = disp["Cum PD"] * 100
             disp["Annualized default rate (%)"] = disp["Annualized default rate"] * 100
 
-            if pretty_ints:
-                disp["Unique loans"] = disp["Unique loans"].map(lambda x: "" if pd.isna(x) else f"{int(x):,}")
-                disp["Defaulted loans"] = disp["Defaulted loans"].map(lambda x: "" if pd.isna(x) else f"{int(x):,}")
-                col_config = {
-                    "Vintage": st.column_config.TextColumn("Vintage"),
-                    "Unique loans": st.column_config.TextColumn("Unique loans"),
-                    "Defaulted loans": st.column_config.TextColumn("Defaulted loans"),
-                    "Cum PD (%)": st.column_config.ProgressColumn("Cum PD (%)", format="%.2f%%", min_value=0.0, max_value=100.0),
-                    "Obs Time (years)": st.column_config.NumberColumn("Obs Time (years)", format="%.2f"),
-                    "Annualized default rate (%)": st.column_config.NumberColumn("Annualized default rate (%)", format="%.2f%%"),
-                }
-            else:
-                col_config = {
-                    "Vintage": st.column_config.TextColumn("Vintage"),
-                    "Unique loans": st.column_config.NumberColumn("Unique loans", format="%d"),
-                    "Defaulted loans": st.column_config.NumberColumn("Defaulted loans", format="%d"),
-                    "Cum PD": st.column_config.ProgressColumn("Cum PD", format="%.2f%%", min_value=0.0, max_value=1.0),
-                    "Obs Time (years)": st.column_config.NumberColumn("Obs Time (years)", format="%.2f"),
-                    "Annualized default rate": st.column_config.NumberColumn("Annualized default rate", format="%.2f%%"),
-                }
-
-            st.dataframe(
-                disp[["Vintage","Unique loans","Defaulted loans","Cum PD (%)","Obs Time (years)","Annualized default rate (%)"]],
-                use_container_width=True,
-                hide_index=True,
-                column_config=col_config,
+            table = disp[[
+                "Vintage",
+                "Unique loans",
+                "Defaulted loans",
+                "Cum PD (%)",
+                "Obs Time (years)",
+                "Annualized default rate (%)",
+            ]]
+            styles = {
+                "Unique loans": "{:,.0f}" if pretty_ints else "{:.0f}",
+                "Defaulted loans": "{:,.0f}" if pretty_ints else "{:.0f}",
+                "Cum PD (%)": "{:.2f}",
+                "Obs Time (years)": "{:.2f}",
+                "Annualized default rate (%)": "{:.2f}",
+            }
+            styler = (
+                table.style
+                .format(styles)
+                .bar(subset=["Cum PD (%)", "Annualized default rate (%)"], color="#5B9BD5")
+                .hide(axis="index")
             )
+
+            st.dataframe(styler, use_container_width=True)
 
             st.download_button(
                 'Download CSV (vintage default summary)',
@@ -815,48 +801,64 @@ if uploaded:
     # ---- Vintage curves — QOB engine, months axis, % y, legend ----
     with tab_charts:
         st.subheader('Vintage curves (months on axis; QOB engine for stable denominators)')
-        try:
-            prog_bar = st.progress(0.0, text="Initializing …")
-            upd = mk_progress_updater(prog_bar, steps=5)
+        col_chart, col_settings = st.columns([3, 1])
 
-            max_qob_show = max(1, math.ceil(max_months_show / 3))
-            df_plot_any = build_chart_data_fast_quarter(
-                chosen_df_raw, dpd_threshold=dpd_threshold, max_qob=max_qob_show, prog=upd
+        with col_settings:
+            st.header('Chart settings')
+            max_months_show = st.slider('Show curves up to (months)', min_value=12, max_value=180, value=60, step=6)
+            show_legend = st.checkbox('Show legend in chart', value=True)
+            palette_option = st.selectbox('Color palette', ['Gradient', 'Plotly', 'Viridis'])
+            base_color = st.color_picker(
+                'Base chart color',
+                value=st.get_option("theme.primaryColor") or '#1f77b4',
+                help='Used when Gradient palette is selected.',
             )
+            line_width = st.slider('Line width', min_value=1, max_value=5, value=1)
 
-            if df_plot_any.empty:
-                prog_bar.progress(1.0, text="No data to plot.")
-                st.info('Not enough data to plot curves for the chosen dataset.')
-            else:
-                vintages = df_plot_any.columns.tolist()
-                selected_vintages = st.multiselect('Vintages to display', vintages, default=vintages)
-                if not selected_vintages:
-                    prog_bar.progress(1.0, text="No vintages selected.")
-                    st.info('Select at least one vintage to plot.')
+        with col_chart:
+            try:
+                prog_bar = st.progress(0.0, text="Initializing …")
+                upd = mk_progress_updater(prog_bar, steps=5)
+
+                max_qob_show = max(1, math.ceil(max_months_show / 3))
+                df_plot_any = build_chart_data_fast_quarter(
+                    chosen_df_raw, dpd_threshold=dpd_threshold, max_qob=max_qob_show, prog=upd
+                )
+
+                if df_plot_any.empty:
+                    prog_bar.progress(1.0, text="No data to plot.")
+                    st.info('Not enough data to plot curves for the chosen dataset.')
                 else:
-                    df_plot = df_plot_any[selected_vintages]
-                    prog_bar.progress(0.9, text="Rendering chart …")
-                    ttl = f'Vintage Default-Rate Evolution | DPD≥{dpd_threshold}'
-                    fig = plot_curves_percent_with_months(
-                        df_wide=df_plot,
-                        title=ttl,
-                        show_legend=show_legend,
-                        legend_limit=50,
-                        palette=palette_option,
-                        base_color=base_color,
-                        line_width=line_width,
-                    )
-                    prog_bar.progress(1.0, text="Done")
+                    vintages = df_plot_any.columns.tolist()
+                    selected_vintages = st.multiselect('Vintages to display', vintages, default=vintages)
+                    if not selected_vintages:
+                        prog_bar.progress(1.0, text="No vintages selected.")
+                        st.info('Select at least one vintage to plot.')
+                    else:
+                        df_plot = df_plot_any[selected_vintages]
+                        prog_bar.progress(0.9, text="Rendering chart …")
+                        ttl = f'Vintage Default-Rate Evolution | DPD≥{dpd_threshold}'
+                        fig = plot_curves_percent_with_months(
+                            df_wide=df_plot,
+                            title=ttl,
+                            show_legend=show_legend,
+                            legend_limit=50,
+                            palette=palette_option,
+                            base_color=base_color,
+                            line_width=line_width,
+                        )
+                        prog_bar.progress(1.0, text="Done")
 
-                    export_df = df_plot.reset_index().rename(columns={"QOB":"QOB"})
-                    export_df.insert(0, "Months", export_df["QOB"] * 3)
-                    st.download_button('Download curves (CSV; Months + QOB)',
-                                       export_df.to_csv(index=False).encode('utf-8'),
-                                       'vintage_curves_qob.csv','text/csv')
+                        st.plotly_chart(fig, use_container_width=True)
 
+                        export_df = df_plot.reset_index().rename(columns={"QOB":"QOB"})
+                        export_df.insert(0, "Months", export_df["QOB"] * 3)
+                        st.download_button('Download curves (CSV; Months + QOB)',
+                                           export_df.to_csv(index=False).encode('utf-8'),
+                                           'vintage_curves_qob.csv','text/csv')
 
-        except Exception as e:
-            st.info(f'Plot skipped, {e}')
+            except Exception as e:
+                st.info(f'Plot skipped, {e}')
 
 else:
     st.caption('Upload an Excel to continue.')
