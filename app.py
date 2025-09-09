@@ -884,7 +884,7 @@ with right:
         # ---- Vintage curves — QOB engine, months axis, % y, legend ----
         with tab_charts:
             st.subheader('Vintage curves (months on axis)')
-            col_chart, col_settings = st.columns([3, 1])
+            col_chart, col_settings = st.columns([3, 0.5])
 
             with col_settings:
                 st.header('Chart settings')
@@ -947,6 +947,7 @@ with right:
     else:
         st.caption('Upload an Excel to continue.')
         
+
 
 
 
