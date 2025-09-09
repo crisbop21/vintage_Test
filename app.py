@@ -712,146 +712,151 @@ if uploaded:
             st.session_state['df_full'] = df_full
             status.update(label='Full dataset loaded.', state='complete')
 
-    st.divider()
+     st.divider()
+
+    tab_integrity, tab_tables, tab_charts = st.tabs(["Integrity", "Tables", "Charts"])
 
     # Integrity
-    st.subheader('Integrity checks, PDF (summary only) & Excel export')
-    dataset_choice = st.radio('Choose dataset for checks', options=('Preview', 'Full (if loaded)'), horizontal=True)
-    chosen_df_raw = preview_df if dataset_choice == 'Preview' or st.session_state['df_full'] is None else st.session_state['df_full']
-    dataset_label = 'Preview' if (dataset_choice == 'Preview' or st.session_state['df_full'] is None) else 'Full'
+    with tab_integrity:
+        st.subheader('Integrity checks, PDF (summary only) & Excel export')
+        dataset_choice = st.radio('Choose dataset for checks', options=('Preview', 'Full (if loaded)'), horizontal=True)
+        chosen_df_raw = preview_df if dataset_choice == 'Preview' or st.session_state['df_full'] is None else st.session_state['df_full']
+        dataset_label = 'Preview' if (dataset_choice == 'Preview' or st.session_state['df_full'] is None) else 'Full'
 
-    if st.button('Run integrity checks and generate outputs'):
-        with st.status('Running checks...', expanded=False):
-            summary, issues_df, vintage_issues_df = run_integrity_checks(chosen_df_raw, dpd_threshold=dpd_threshold)
+        if st.button('Run integrity checks and generate outputs'):
+            with st.status('Running checks...', expanded=False):
+                summary, issues_df, vintage_issues_df = run_integrity_checks(chosen_df_raw, dpd_threshold=dpd_threshold)
 
-        if 'fatal' in summary:
-            st.error(summary['fatal'])
-        else:
-            st.success('Checks complete.')
-            st.json(summary)
-
-            pdf_bytes = export_integrity_pdf(summary, dataset_label=dataset_label)
-            st.download_button('Download integrity report (PDF, summary-only)', pdf_bytes,
-                               'integrity_report.pdf', 'application/pdf')
-
-            xlsx_bytes = export_issues_excel(issues_df, vintage_issues_df)
-            st.download_button('Download issues sample (Excel)', xlsx_bytes,
-                               'integrity_issues_sample.xlsx',
-                               'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-
-            if issues_df is not None and not issues_df.empty:
-                st.caption('Row-level issues (sample)')
-                st.dataframe(issues_df.head(200), use_container_width=True)
+            if 'fatal' in summary:
+                st.error(summary['fatal'])
             else:
-                st.info('No row-level issues sampled.')
+                st.success('Checks complete.')
+                st.json(summary)
 
-            if vintage_issues_df is not None and not vintage_issues_df.empty:
-                st.caption('Vintage/cohort issues')
-                st.dataframe(vintage_issues_df.head(200), use_container_width=True)
-            else:
-                st.info('No vintage-level issues detected.')
+                pdf_bytes = export_integrity_pdf(summary, dataset_label=dataset_label)
+                st.download_button('Download integrity report (PDF, summary-only)', pdf_bytes,
+                                   'integrity_report.pdf', 'application/pdf')
 
-    st.divider()
+                xlsx_bytes = export_issues_excel(issues_df, vintage_issues_df)
+                st.download_button('Download issues sample (Excel)', xlsx_bytes,
+                                   'integrity_issues_sample.xlsx',
+                                   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+                if issues_df is not None and not issues_df.empty:
+                    st.caption('Row-level issues (sample)')
+                    st.dataframe(issues_df.head(200), use_container_width=True)
+                else:
+                    st.info('No row-level issues sampled.')
+
+                if vintage_issues_df is not None and not vintage_issues_df.empty:
+                    st.caption('Vintage/cohort issues')
+                    st.dataframe(vintage_issues_df.head(200), use_container_width=True)
+                else:
+                    st.info('No vintage-level issues detected.')
+
+        st.divider()
 
     # ---- Vintage table (explicit formatting) ----
-    st.subheader('Unique loans & default summary by vintage')
-    try:
-        summary_df = compute_vintage_default_summary(chosen_df_raw, dpd_threshold=dpd_threshold)
-        st.caption('Observation_Time = default date − first obs (if defaulted), else last obs − first obs (years).')
+    with tab_tables:
+        st.subheader('Unique loans & default summary by vintage')
+        try:
+            summary_df = compute_vintage_default_summary(chosen_df_raw, dpd_threshold=dpd_threshold)
+            st.caption('Observation_Time = default date − first obs (if defaulted), else last obs − first obs (years).')
 
-        # Rename only for display
-        disp = summary_df.rename(columns={
-            "Unique_loans": "Unique loans",
-            "Defaulted_loans": "Defaulted loans",
-            "Observation_Time": "Obs Time (years)",
-            "Default_rate_pa": "Annualized default rate",
-            "Cum_PD": "Cum PD",
-        })
-        disp["Cum PD (%)"] = disp["Cum PD"] * 100
-        disp["Annualized default rate (%)"] = disp["Annualized default rate"] * 100
+            # Rename only for display
+            disp = summary_df.rename(columns={
+                "Unique_loans": "Unique loans",
+                "Defaulted_loans": "Defaulted loans",
+                "Observation_Time": "Obs Time (years)",
+                "Default_rate_pa": "Annualized default rate",
+                "Cum_PD": "Cum PD",
+            })
+            disp["Cum PD (%)"] = disp["Cum PD"] * 100
+            disp["Annualized default rate (%)"] = disp["Annualized default rate"] * 100
 
-        if pretty_ints:
-            disp["Unique loans"] = disp["Unique loans"].map(lambda x: "" if pd.isna(x) else f"{int(x):,}")
-            disp["Defaulted loans"] = disp["Defaulted loans"].map(lambda x: "" if pd.isna(x) else f"{int(x):,}")
-            col_config = {
-                "Vintage": st.column_config.TextColumn("Vintage"),
-                "Unique loans": st.column_config.TextColumn("Unique loans"),
-                "Defaulted loans": st.column_config.TextColumn("Defaulted loans"),
-                "Cum PD (%)": st.column_config.ProgressColumn("Cum PD (%)", format="%.2f%%", min_value=0.0, max_value=100.0),
-                "Obs Time (years)": st.column_config.NumberColumn("Obs Time (years)", format="%.2f"),
-                "Annualized default rate (%)": st.column_config.NumberColumn("Annualized default rate (%)", format="%.2f%%"),
-            }
-        else:
-            col_config = {
-                "Vintage": st.column_config.TextColumn("Vintage"),
-                "Unique loans": st.column_config.NumberColumn("Unique loans", format="%d"),
-                "Defaulted loans": st.column_config.NumberColumn("Defaulted loans", format="%d"),
-                "Cum PD": st.column_config.ProgressColumn("Cum PD", format="%.2f%%", min_value=0.0, max_value=1.0),
-                "Obs Time (years)": st.column_config.NumberColumn("Obs Time (years)", format="%.2f"),
-                "Annualized default rate": st.column_config.NumberColumn("Annualized default rate", format="%.2f%%"),
-            }
+            if pretty_ints:
+                disp["Unique loans"] = disp["Unique loans"].map(lambda x: "" if pd.isna(x) else f"{int(x):,}")
+                disp["Defaulted loans"] = disp["Defaulted loans"].map(lambda x: "" if pd.isna(x) else f"{int(x):,}")
+                col_config = {
+                    "Vintage": st.column_config.TextColumn("Vintage"),
+                    "Unique loans": st.column_config.TextColumn("Unique loans"),
+                    "Defaulted loans": st.column_config.TextColumn("Defaulted loans"),
+                    "Cum PD (%)": st.column_config.ProgressColumn("Cum PD (%)", format="%.2f%%", min_value=0.0, max_value=100.0),
+                    "Obs Time (years)": st.column_config.NumberColumn("Obs Time (years)", format="%.2f"),
+                    "Annualized default rate (%)": st.column_config.NumberColumn("Annualized default rate (%)", format="%.2f%%"),
+                }
+            else:
+                col_config = {
+                    "Vintage": st.column_config.TextColumn("Vintage"),
+                    "Unique loans": st.column_config.NumberColumn("Unique loans", format="%d"),
+                    "Defaulted loans": st.column_config.NumberColumn("Defaulted loans", format="%d"),
+                    "Cum PD": st.column_config.ProgressColumn("Cum PD", format="%.2f%%", min_value=0.0, max_value=1.0),
+                    "Obs Time (years)": st.column_config.NumberColumn("Obs Time (years)", format="%.2f"),
+                    "Annualized default rate": st.column_config.NumberColumn("Annualized default rate", format="%.2f%%"),
+                }
 
-        st.dataframe(
-            disp[["Vintage","Unique loans","Defaulted loans","Cum PD (%)","Obs Time (years)","Annualized default rate (%)"]],
-            use_container_width=True,
-            hide_index=True,
-            column_config=col_config,
-        )
+            st.dataframe(
+                disp[["Vintage","Unique loans","Defaulted loans","Cum PD (%)","Obs Time (years)","Annualized default rate (%)"]],
+                use_container_width=True,
+                hide_index=True,
+                column_config=col_config,
+            )
 
-        st.download_button(
-            'Download CSV (vintage default summary)',
-            summary_df.to_csv(index=False).encode('utf-8'),
-            'vintage_default_summary.csv','text/csv'
-        )
-    except Exception as e:
-        st.info(f'Could not compute vintage default summary: {e}')
+            st.download_button(
+                'Download CSV (vintage default summary)',
+                summary_df.to_csv(index=False).encode('utf-8'),
+                'vintage_default_summary.csv','text/csv'
+            )
+        except Exception as e:
+            st.info(f'Could not compute vintage default summary: {e}')
 
-    st.divider()
+        st.divider()
 
     # ---- Vintage curves — QOB engine, months axis, % y, legend ----
-    st.subheader('Vintage curves (months on axis; QOB engine for stable denominators)')
-    try:
-        prog_bar = st.progress(0.0, text="Initializing …")
-        upd = mk_progress_updater(prog_bar, steps=5)
+    with tab_charts:
+        st.subheader('Vintage curves (months on axis; QOB engine for stable denominators)')
+        try:
+            prog_bar = st.progress(0.0, text="Initializing …")
+            upd = mk_progress_updater(prog_bar, steps=5)
 
-        max_qob_show = max(1, math.ceil(max_months_show / 3))
-        df_plot_any = build_chart_data_fast_quarter(
-            chosen_df_raw, dpd_threshold=dpd_threshold, max_qob=max_qob_show, prog=upd
-        )
+            max_qob_show = max(1, math.ceil(max_months_show / 3))
+            df_plot_any = build_chart_data_fast_quarter(
+                chosen_df_raw, dpd_threshold=dpd_threshold, max_qob=max_qob_show, prog=upd
+            )
 
-        if df_plot_any.empty:
-            prog_bar.progress(1.0, text="No data to plot.")
-            st.info('Not enough data to plot curves for the chosen dataset.')
-        else:
-            vintages = df_plot_any.columns.tolist()
-            selected_vintages = st.multiselect('Vintages to display', vintages, default=vintages)
-            if not selected_vintages:
-                prog_bar.progress(1.0, text="No vintages selected.")
-                st.info('Select at least one vintage to plot.')
+            if df_plot_any.empty:
+                prog_bar.progress(1.0, text="No data to plot.")
+                st.info('Not enough data to plot curves for the chosen dataset.')
             else:
-                df_plot = df_plot_any[selected_vintages]
-                prog_bar.progress(0.9, text="Rendering chart …")
-                ttl = f'Vintage Default-Rate Evolution | DPD≥{dpd_threshold}'
-                fig = plot_curves_percent_with_months(
-                    df_wide=df_plot,
-                    title=ttl,
-                    show_legend=show_legend,
-                    legend_limit=50,
-                    palette=palette_option,
-                    base_color=base_color,
-                    line_width=line_width,
-                )
-                prog_bar.progress(1.0, text="Done")
+                vintages = df_plot_any.columns.tolist()
+                selected_vintages = st.multiselect('Vintages to display', vintages, default=vintages)
+                if not selected_vintages:
+                    prog_bar.progress(1.0, text="No vintages selected.")
+                    st.info('Select at least one vintage to plot.')
+                else:
+                    df_plot = df_plot_any[selected_vintages]
+                    prog_bar.progress(0.9, text="Rendering chart …")
+                    ttl = f'Vintage Default-Rate Evolution | DPD≥{dpd_threshold}'
+                    fig = plot_curves_percent_with_months(
+                        df_wide=df_plot,
+                        title=ttl,
+                        show_legend=show_legend,
+                        legend_limit=50,
+                        palette=palette_option,
+                        base_color=base_color,
+                        line_width=line_width,
+                    )
+                    prog_bar.progress(1.0, text="Done")
 
-                export_df = df_plot.reset_index().rename(columns={"QOB":"QOB"})
-                export_df.insert(0, "Months", export_df["QOB"] * 3)
-                st.download_button('Download curves (CSV; Months + QOB)',
-                                   export_df.to_csv(index=False).encode('utf-8'),
-                                   'vintage_curves_qob.csv','text/csv')
+                    export_df = df_plot.reset_index().rename(columns={"QOB":"QOB"})
+                    export_df.insert(0, "Months", export_df["QOB"] * 3)
+                    st.download_button('Download curves (CSV; Months + QOB)',
+                                       export_df.to_csv(index=False).encode('utf-8'),
+                                       'vintage_curves_qob.csv','text/csv')
 
-             
-    except Exception as e:
-        st.info(f'Plot skipped, {e}')
+
+        except Exception as e:
+            st.info(f'Plot skipped, {e}')
 
 else:
     st.caption('Upload an Excel to continue.')
