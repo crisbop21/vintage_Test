@@ -313,7 +313,6 @@ def plot_curves_percent_with_months(df_wide: pd.DataFrame,
             mode='lines',
             name=str(col),
             line=dict(color=palette_colors[i], width=line_width),
-            line=dict(color=palette[i], width=line_width),
             hovertemplate=f"Vintage: {col}<br>Month: %{{x}}<br>Default rate: %{{y:.2%}}<extra></extra>"
         ))
 
@@ -856,4 +855,5 @@ if uploaded:
 
 else:
     st.caption('Upload an Excel to continue.')
+
 
