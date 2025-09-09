@@ -117,8 +117,15 @@ st.markdown(
         a {{
             color: {WB_PRIMARY} !important;
         }}
-        p {{
+         p {{
             max-width: 75ch;
+        }}
+        [data-baseweb="tag"] {{
+            background-color: {WB_PRIMARY};
+            color: white !important;
+        }}
+        [data-baseweb="tag"] [data-baseweb="close"] {{
+            color: white !important;
         }}
     </style>
     """,
@@ -409,6 +416,7 @@ def plot_curves_percent_with_months(df_wide: pd.DataFrame,
         yaxis=dict(title='Cumulative default rate', tickformat='.2%'),
         hovermode='x unified',
         showlegend=show_leg,
+        legend=dict(bgcolor=WB_PRIMARY, font=dict(color="white")),
     )
 
     return fig
@@ -753,7 +761,7 @@ with st.sidebar:
         "4. Explore the tabs for integrity checks, tables, and charts."
     )
 
-left, right = st.columns([0.5, 2])
+left, right = st.columns([0.5, 2], gap="large")
 
 with left:
     st.header('Settings')
@@ -885,8 +893,8 @@ with right:
 
         # ---- Vintage curves — QOB engine, months axis, % y, legend ----
         with tab_charts:
-            st.subheader('Vintage curves (months on axis)')
-            col_chart, col_settings = st.columns([3, 0.5])
+           st.subheader('Vintage curves (months on axis)')
+            col_chart, col_settings = st.columns([3, 0.5], gap="large")
 
             with col_settings:
                 st.header('Chart settings')
@@ -949,6 +957,7 @@ with right:
     else:
         st.caption('Upload an Excel to continue.')
         
+
 
 
 
