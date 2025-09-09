@@ -597,11 +597,11 @@ def export_integrity_pdf(summary: dict, dataset_label: str = 'Full dataset') -> 
 
 def export_issues_excel(issues_df: pd.DataFrame, vintage_issues: pd.DataFrame) -> bytes:
     out = BytesIO()
-    with pd.ExcelWriter(out, engine='xlsxwriter') as xw:␊
+    with pd.ExcelWriter(out, engine='xlsxwriter') as xw:
         (issues_df if (issues_df is not None and not issues_df.empty)
-         else pd.DataFrame({'note':['No row-level issues sampled']})).to_excel(xw, index=False, sheet_name='Row issues')␊
-        (vintage_issues if (vintage_issues is not None and not vintage_issues.empty)␊
-         else pd.DataFrame({'note':['No vintage-level issues']})).to_excel(xw, index=False, sheet_name='Vintage issues')␊
+         else pd.DataFrame({'note':['No row-level issues sampled']})).to_excel(xw, index=False, sheet_name='Row issues')
+        (vintage_issues if (vintage_issues is not None and not vintage_issues.empty)
+         else pd.DataFrame({'note':['No vintage-level issues']})).to_excel(xw, index=False, sheet_name='Vintage issues')
     return out.getvalue()
 # ──────────────────────────────────────────────────────────────────────────────
 # Vintage default summary (Cum_PD, Obs_Time, annualized rate)
@@ -816,6 +816,7 @@ if uploaded:
 
 else:
     st.caption('Upload an Excel to continue.')
+
 
 
 
