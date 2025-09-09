@@ -257,7 +257,9 @@ def build_chart_data_fast_quarter(raw_df: pd.DataFrame, dpd_threshold: int, max_
 def plot_curves_percent_with_months(df_wide: pd.DataFrame,
                                     title: str,
                                     show_legend: bool = True,
-                                    legend_limit: int = 40):
+                                    legend_limit: int = 40,
+                                    base_color: Optional[str] = None,
+                                    line_width: int = 1):
     if df_wide.empty:
         st.info('Not enough data to plot.')
         return None
@@ -285,7 +287,7 @@ def plot_curves_percent_with_months(df_wide: pd.DataFrame,
             palette.append(f'rgb({ri},{gi},{bi})')
         return palette
 
-    base_color = st.get_option("theme.primaryColor") or "#1f77b4"
+    base_color = base_color or st.get_option("theme.primaryColor") or "#1f77b4"
     palette = _generate_palette(base_color, N)
 
     fig = go.Figure()
@@ -296,7 +298,8 @@ def plot_curves_percent_with_months(df_wide: pd.DataFrame,
             y=Y[:, i],
             mode='lines',
             name=str(col),
-            line=dict(color=palette[i], width=1)
+            line=dict(color=palette[i], width=line_width),
+            hovertemplate=f"Vintage: {col}<br>Month: %{{x}}<br>Default rate: %{{y:.2%}}<extra></extra>"
         ))
 
     fig.update_layout(
@@ -654,6 +657,9 @@ with st.sidebar:
     dpd_threshold = st.number_input('Default if Days past due ≥', min_value=1, max_value=365, value=90, step=1)
     max_months_show = st.slider('Show curves up to (months)', min_value=12, max_value=180, value=60, step=6)
     show_legend = st.checkbox('Show legend in chart', value=True)
+    base_color = st.color_picker('Base chart color', value=st.get_option("theme.primaryColor") or '#1f77b4')
+    line_width = st.slider('Line width', min_value=1, max_value=5, value=1)
+
     pretty_ints = st.checkbox(
         "Thousands separators for integer columns",
         value=False,
@@ -798,17 +804,25 @@ if uploaded:
             prog_bar.progress(1.0, text="No data to plot.")
             st.info('Not enough data to plot curves for the chosen dataset.')
         else:
-            prog_bar.progress(0.9, text="Rendering chart …")
-            ttl = f'Vintage Default-Rate Evolution | DPD≥{dpd_threshold}'
-            fig = plot_curves_percent_with_months(df_wide=df_plot_any, title=ttl,
-                                                  show_legend=show_legend, legend_limit=50)
-            prog_bar.progress(1.0, text="Done")
+            vintages = df_plot_any.columns.tolist()
+            selected_vintages = st.multiselect('Vintages to display', vintages, default=vintages)
+            if not selected_vintages:
+                prog_bar.progress(1.0, text="No vintages selected.")
+                st.info('Select at least one vintage to plot.')
+            else:
+                df_plot = df_plot_any[selected_vintages]
+                prog_bar.progress(0.9, text="Rendering chart …")
+                ttl = f'Vintage Default-Rate Evolution | DPD≥{dpd_threshold}'
+                fig = plot_curves_percent_with_months(df_wide=df_plot, title=ttl,
+                                                      show_legend=show_legend, legend_limit=50,
+                                                      base_color=base_color, line_width=line_width)
+                prog_bar.progress(1.0, text="Done")
 
-            export_df = df_plot_any.reset_index().rename(columns={"QOB":"QOB"})
-            export_df.insert(0, "Months", export_df["QOB"] * 3)
-            st.download_button('Download curves (CSV; Months + QOB)',
-                               export_df.to_csv(index=False).encode('utf-8'),
-                               'vintage_curves_qob.csv','text/csv')
+                export_df = df_plot.reset_index().rename(columns={"QOB":"QOB"})
+                export_df.insert(0, "Months", export_df["QOB"] * 3)
+                st.download_button('Download curves (CSV; Months + QOB)',
+                                   export_df.to_csv(index=False).encode('utf-8'),
+                                   'vintage_curves_qob.csv','text/csv')
 
              
     except Exception as e:
@@ -816,15 +830,3 @@ if uploaded:
 
 else:
     st.caption('Upload an Excel to continue.')
-
-
-
-
-
-
-
-
-
-
-
-
