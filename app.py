@@ -55,8 +55,9 @@ st.set_page_config(page_title='Vintage Curves (QOB) + Integrity — Ultra-Fast',
 density_mode = st.sidebar.selectbox('Density', ['Comfortable', 'Compact'], index=0)
 
 # Blue palette with white background
-WB_PRIMARY = "#5B9BD5"      # Button and link color
-WB_SECONDARY = "#87CEEB"    # Sidebar background
+# Darker blues for sidebar and accents
+WB_PRIMARY = "#1E3A8A"      # Button and link color
+WB_SECONDARY = "#1E40AF"    # Sidebar background
 WB_BG = "#FFFFFF"           # Page background
 WB_TEXT = "#002244"         # General text color
 st.markdown(
@@ -83,6 +84,9 @@ st.markdown(
             background-color: {WB_SECONDARY};
             padding: var(--space-3);
         }}
+        [data-testid="stSidebar"] * {
+            color: white !important;
+        }
         .block-container {{
             padding-top: var(--space-4);
             padding-bottom: var(--space-4);
@@ -93,7 +97,7 @@ st.markdown(
             margin-bottom: var(--space-2);
             padding: var(--space-1) var(--space-2);
             border: none;
-            color: {WB_TEXT} !important;
+            color: white !important;
         }}
         .stButton>button:hover {{
             filter: brightness(1.1);
@@ -102,7 +106,7 @@ st.markdown(
             filter: brightness(0.9);
         }}
         .stButton>button:focus {{
-            outline: 3px solid {WB_TEXT};
+            outline: 3px solid white;
             outline-offset: 2px;
         }}
         a {{
@@ -778,171 +782,165 @@ with left:
                 df_full = load_full(uploaded.getvalue(), sheet=sheet, header=header_row - 1)
                 st.session_state['df_full'] = df_full
                 status.update(label='Dataset loaded.', state='complete')
+with right:
+    if st.session_state['df_full'] is not None:
+        st.divider()
+        chosen_df_raw = st.session_state['df_full']
+        tab_integrity, tab_tables, tab_charts = st.tabs(["Integrity", "Tables", "Charts"])
 
-        if st.session_state['df_full'] is not None:
-            st.divider()
-            chosen_df_raw = st.session_state['df_full']
-            tab_integrity, tab_tables, tab_charts = st.tabs(["Integrity", "Tables", "Charts"])
+        # Integrity
+        with tab_integrity:
+            st.subheader('Integrity checks, PDF (summary only) & Excel export')
+            dataset_label = 'Full'
 
-            # Integrity
-            with tab_integrity:
-                st.subheader('Integrity checks, PDF (summary only) & Excel export')
-                dataset_label = 'Full'
+            if st.button('Run integrity checks and generate outputs'):
+                with st.status('Running checks...', expanded=False):
+                    summary, issues_df, vintage_issues_df = run_integrity_checks(chosen_df_raw, dpd_threshold=dpd_threshold)
 
-                if st.button('Run integrity checks and generate outputs'):
-                    with st.status('Running checks...', expanded=False):
-                        summary, issues_df, vintage_issues_df = run_integrity_checks(chosen_df_raw, dpd_threshold=dpd_threshold)
+                if 'fatal' in summary:
+                    st.error(summary['fatal'])
+                else:
+                    st.success('Checks complete.')
+                    st.json(summary)
 
-                    if 'fatal' in summary:
-                        st.error(summary['fatal'])
+                    pdf_bytes = export_integrity_pdf(summary, dataset_label=dataset_label)
+                    st.download_button('Download integrity report (PDF, summary-only)', pdf_bytes,
+                                       'integrity_report.pdf', 'application/pdf')
+
+                    xlsx_bytes = export_issues_excel(issues_df, vintage_issues_df)
+                    st.download_button('Download issues sample (Excel)', xlsx_bytes,
+                                       'integrity_issues_sample.xlsx',
+                                       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+                    if issues_df is not None and not issues_df.empty:
+                        st.caption('Row-level issues (sample)')
+                        st.dataframe(issues_df.head(200), use_container_width=True)
                     else:
-                        st.success('Checks complete.')
-                        st.json(summary)
+                        st.info('No row-level issues sampled.')
 
-                        pdf_bytes = export_integrity_pdf(summary, dataset_label=dataset_label)
-                        st.download_button('Download integrity report (PDF, summary-only)', pdf_bytes,
-                                           'integrity_report.pdf', 'application/pdf')
+                    if vintage_issues_df is not None and not vintage_issues_df.empty:
+                        st.caption('Vintage/cohort issues')
+                        st.dataframe(vintage_issues_df.head(200), use_container_width=True)
+                    else:
+                        st.info('No vintage-level issues detected.')
 
-                        xlsx_bytes = export_issues_excel(issues_df, vintage_issues_df)
-                        st.download_button('Download issues sample (Excel)', xlsx_bytes,
-                                           'integrity_issues_sample.xlsx',
-                                           'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+            st.divider()
 
-                        if issues_df is not None and not issues_df.empty:
-                            st.caption('Row-level issues (sample)')
-                            st.dataframe(issues_df.head(200), use_container_width=True)
-                        else:
-                            st.info('No row-level issues sampled.')
+        # ---- Vintage table (explicit formatting) ----
+        with tab_tables:
+            st.subheader('Unique loans & default summary by vintage')
+            try:
+                summary_df = compute_vintage_default_summary(chosen_df_raw, dpd_threshold=dpd_threshold)
+                st.caption('Observation_Time = default date − first obs (if defaulted), else last obs − first obs (years).')
 
-                        if vintage_issues_df is not None and not vintage_issues_df.empty:
-                            st.caption('Vintage/cohort issues')
-                            st.dataframe(vintage_issues_df.head(200), use_container_width=True)
-                        else:
-                            st.info('No vintage-level issues detected.')
+                # Rename only for display
+                disp = summary_df.rename(columns={
+                    "Unique_loans": "Unique loans",
+                    "Defaulted_loans": "Defaulted loans",
+                    "Observation_Time": "Obs Time (years)",
+                    "Default_rate_pa": "Annualized default rate",
+                    "Cum_PD": "Cum PD",
+                })
+                disp["Cum PD (%)"] = disp["Cum PD"] * 100
+                disp["Annualized default rate (%)"] = disp["Annualized default rate"] * 100
 
-                st.divider()
+                table = disp[[
+                    "Vintage",
+                    "Unique loans",
+                    "Defaulted loans",
+                    "Cum PD (%)",
+                    "Obs Time (years)",
+                    "Annualized default rate (%)",
+                ]]
+                styles = {
+                    "Unique loans": "{:,.0f}" if pretty_ints else "{:.0f}",
+                    "Defaulted loans": "{:,.0f}" if pretty_ints else "{:.0f}",
+                    "Cum PD (%)": "{:.2f}",
+                    "Obs Time (years)": "{:.2f}",
+                    "Annualized default rate (%)": "{:.2f}",
+                }
+                styler = (
+                    table.style
+                    .format(styles)
+                    .bar(subset=["Cum PD (%)", "Annualized default rate (%)"], color="#5B9BD5")
+                    .hide(axis="index")
+                )
 
-            # ---- Vintage table (explicit formatting) ----
-            with tab_tables:
-                st.subheader('Unique loans & default summary by vintage')
+                st.dataframe(styler, use_container_width=True)
+
+                st.download_button(
+                    'Download CSV (vintage default summary)',
+                    summary_df.to_csv(index=False).encode('utf-8'),
+                    'vintage_default_summary.csv','text/csv'
+                )
+            except Exception as e:
+                st.info(f'Could not compute vintage default summary: {e}')
+
+            st.divider()
+
+        # ---- Vintage curves — QOB engine, months axis, % y, legend ----
+        with tab_charts:
+            st.subheader('Vintage curves (months on axis)')
+            col_chart, col_settings = st.columns([3, 1])
+
+            with col_settings:
+                st.header('Chart settings')
+                max_months_show = st.slider('Show curves up to (months)', min_value=12, max_value=180, value=60, step=6)
+                show_legend = st.checkbox('Show legend in chart', value=True)
+                palette_option = st.selectbox('Color palette', ['Gradient', 'Plotly', 'Viridis'])
+                base_color = st.color_picker(
+                    'Base chart color',
+                    value=st.get_option("theme.primaryColor") or '#1f77b4',
+                    help='Used when Gradient palette is selected.',
+                )
+                line_width = st.slider('Line width', min_value=1, max_value=5, value=1)
+
+            with col_chart:
                 try:
-                    summary_df = compute_vintage_default_summary(chosen_df_raw, dpd_threshold=dpd_threshold)
-                    st.caption('Observation_Time = default date − first obs (if defaulted), else last obs − first obs (years).')
+                    prog_bar = st.progress(0.0, text="Initializing …")
+                    upd = mk_progress_updater(prog_bar, steps=5)
 
-                    # Rename only for display
-                    disp = summary_df.rename(columns={
-                        "Unique_loans": "Unique loans",
-                        "Defaulted_loans": "Defaulted loans",
-                        "Observation_Time": "Obs Time (years)",
-                        "Default_rate_pa": "Annualized default rate",
-                        "Cum_PD": "Cum PD",
-                    })
-                    disp["Cum PD (%)"] = disp["Cum PD"] * 100
-                    disp["Annualized default rate (%)"] = disp["Annualized default rate"] * 100
-
-                    table = disp[[
-                        "Vintage",
-                        "Unique loans",
-                        "Defaulted loans",
-                        "Cum PD (%)",
-                        "Obs Time (years)",
-                        "Annualized default rate (%)",
-                    ]]
-                    styles = {
-                        "Unique loans": "{:,.0f}" if pretty_ints else "{:.0f}",
-                        "Defaulted loans": "{:,.0f}" if pretty_ints else "{:.0f}",
-                        "Cum PD (%)": "{:.2f}",
-                        "Obs Time (years)": "{:.2f}",
-                        "Annualized default rate (%)": "{:.2f}",
-                    }
-                    styler = (
-                        table.style
-                        .format(styles)
-                        .bar(subset=["Cum PD (%)", "Annualized default rate (%)"], color="#5B9BD5")
-                        .hide(axis="index")
+                    max_qob_show = max(1, math.ceil(max_months_show / 3))
+                    df_plot_any = build_chart_data_fast_quarter(
+                        chosen_df_raw, dpd_threshold=dpd_threshold, max_qob=max_qob_show, prog=upd
                     )
 
-                    st.dataframe(styler, use_container_width=True)
-
-                    st.download_button(
-                        'Download CSV (vintage default summary)',
-                        summary_df.to_csv(index=False).encode('utf-8'),
-                        'vintage_default_summary.csv','text/csv'
-                    )
-                except Exception as e:
-                    st.info(f'Could not compute vintage default summary: {e}')
-
-                st.divider()
-
-            # ---- Vintage curves — QOB engine, months axis, % y, legend ----
-            with tab_charts:
-                st.subheader('Vintage curves (months on axis)')
-                col_chart, col_settings = st.columns([3, 1])
-
-                with col_settings:
-                    st.header('Chart settings')
-                    max_months_show = st.slider('Show curves up to (months)', min_value=12, max_value=180, value=60, step=6)
-                    show_legend = st.checkbox('Show legend in chart', value=True)
-                    palette_option = st.selectbox('Color palette', ['Gradient', 'Plotly', 'Viridis'])
-                    base_color = st.color_picker(
-                        'Base chart color',
-                        value=st.get_option("theme.primaryColor") or '#1f77b4',
-                        help='Used when Gradient palette is selected.',
-                    )
-                    line_width = st.slider('Line width', min_value=1, max_value=5, value=1)
-
-                with col_chart:
-                    try:
-                        prog_bar = st.progress(0.0, text="Initializing …")
-                        upd = mk_progress_updater(prog_bar, steps=5)
-
-                        max_qob_show = max(1, math.ceil(max_months_show / 3))
-                        df_plot_any = build_chart_data_fast_quarter(
-                            chosen_df_raw, dpd_threshold=dpd_threshold, max_qob=max_qob_show, prog=upd
-                        )
-
-                        if df_plot_any.empty:
-                            prog_bar.progress(1.0, text="No data to plot.")
-                            st.info('Not enough data to plot curves for the chosen dataset.')
+                    if df_plot_any.empty:
+                        prog_bar.progress(1.0, text="No data to plot.")
+                        st.info('Not enough data to plot curves for the chosen dataset.')
+                    else:
+                        vintages = df_plot_any.columns.tolist()
+                        selected_vintages = st.multiselect('Vintages to display', vintages, default=vintages)
+                        if not selected_vintages:
+                            prog_bar.progress(1.0, text="No vintages selected.")
+                            st.info('Select at least one vintage to plot.')
                         else:
-                            vintages = df_plot_any.columns.tolist()
-                            selected_vintages = st.multiselect('Vintages to display', vintages, default=vintages)
-                            if not selected_vintages:
-                                prog_bar.progress(1.0, text="No vintages selected.")
-                                st.info('Select at least one vintage to plot.')
-                            else:
-                                df_plot = df_plot_any[selected_vintages]
-                                prog_bar.progress(0.9, text="Rendering chart …")
-                                ttl = f'Vintage Default-Rate Evolution | DPD≥{dpd_threshold}'
-                                fig = plot_curves_percent_with_months(
-                                    df_wide=df_plot,
-                                    title=ttl,
-                                    show_legend=show_legend,
-                                    legend_limit=50,
-                                    palette=palette_option,
-                                    base_color=base_color,
-                                    line_width=line_width,
-                                )
-                                prog_bar.progress(1.0, text="Done")
+                            df_plot = df_plot_any[selected_vintages]
+                            prog_bar.progress(0.9, text="Rendering chart …")
+                            ttl = f'Vintage Default-Rate Evolution | DPD≥{dpd_threshold}'
+                            fig = plot_curves_percent_with_months(
+                                df_wide=df_plot,
+                                title=ttl,
+                                show_legend=show_legend,
+                                legend_limit=50,
+                                palette=palette_option,
+                                base_color=base_color,
+                                line_width=line_width,
+                            )
+                            prog_bar.progress(1.0, text="Done")
 
-                                st.plotly_chart(fig, use_container_width=True)
+                            st.plotly_chart(fig, use_container_width=True)
 
-                                export_df = df_plot.reset_index().rename(columns={"QOB":"QOB"})
-                                export_df.insert(0, "Months", export_df["QOB"] * 3)
-                                st.download_button('Download curves (CSV; Months + QOB)',
-                                                   export_df.to_csv(index=False).encode('utf-8'),
-                                                   'vintage_curves_qob.csv','text/csv')
+                            export_df = df_plot.reset_index().rename(columns={"QOB":"QOB"})
+                            export_df.insert(0, "Months", export_df["QOB"] * 3)
+                            st.download_button('Download curves (CSV; Months + QOB)',
+                                               export_df.to_csv(index=False).encode('utf-8'),
+                                               'vintage_curves_qob.csv','text/csv')
 
-                    except Exception as e:
-                        st.info(f'Plot skipped, {e}')
+                except Exception as e:
+                    st.info(f'Plot skipped, {e}')
+
 
     else:
         st.caption('Upload an Excel to continue.')
-
-with right:
-    st.markdown("### Tips")
-    st.markdown("Use the sidebar for instructions and upload your Excel file to begin.")
-
-
-
-
+        
