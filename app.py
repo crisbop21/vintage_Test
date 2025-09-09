@@ -679,7 +679,7 @@ def compute_vintage_default_summary(raw_df: pd.DataFrame, dpd_threshold: int) ->
 # ──────────────────────────────────────────────────────────────────────────────
 # UI
 # ──────────────────────────────────────────────────────────────────────────────
-with st.sidebar:␊
+with st.sidebar:
     st.header('Instructions')
     st.markdown(
         "1. Configure settings below.\n"
@@ -886,3 +886,4 @@ with center:
 with right:
     st.markdown("### Tips")
     st.markdown("Use the sidebar for instructions and upload your Excel file to begin.")
+
