@@ -884,6 +884,7 @@ with right:
                 styler = (
                     table.style
                     .format(styles)
+                    .background_gradient(subset=["Unique loans", "Defaulted loans"], cmap="Blues")
                     .bar(subset=["Cum PD (%)", "Annualized default rate (%)"], color="#5B9BD5")
                     .hide(axis="index")
                 )
@@ -966,6 +967,7 @@ with right:
     else:
         st.caption('Upload an Excel to continue.')
         
+
 
 
 
