@@ -61,17 +61,18 @@ st.markdown(
     <style>
         html, body, [data-testid="stAppViewContainer"], .stApp {{
             background-color: {WB_BG};
-            color: {WB_TEXT};
+        }}
+        *, *::placeholder {{
+            color: {WB_TEXT} !important;
         }}
         [data-testid="stSidebar"] {{
             background-color: {WB_SECONDARY};
         }}
         .stButton>button {{
             background-color: {WB_PRIMARY};
-            color: {WB_TEXT};
         }}
         a {{
-            color: {WB_PRIMARY};
+            color: {WB_PRIMARY} !important;
         }}
     </style>
     """,
@@ -886,4 +887,5 @@ with center:
 with right:
     st.markdown("### Tips")
     st.markdown("Use the sidebar for instructions and upload your Excel file to begin.")
+
 
