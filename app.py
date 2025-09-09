@@ -53,7 +53,6 @@ st.set_page_config(page_title='Vintage Curves (QOB) + Integrity — Ultra-Fast',
 st.title('Vintage Default-Rate Evolution (QOB) & Data Integrity — Ultra-Fast')
 
 MAX_MB = 50
-PREVIEW_ROWS = 2000
 RESERVED_COLS = {
     'Loan ID','Origination date','Maturity date','Observation date',
     'Days past due','Origination amount','Current amount',
@@ -161,11 +160,6 @@ def prepare_base_cached(raw_df: pd.DataFrame) -> pd.DataFrame:
             dfn[c] = dfn[c].astype('float32')
     dfn = dfn.sort_values(['Loan ID','Observation date'], kind='mergesort')
     return dfn
-
-@cache_data_smart(show_spinner=False)
-def load_preview(file_bytes: bytes, sheet: str, nrows: int, header: int):
-    bio = BytesIO(file_bytes)
-    return pd.read_excel(bio, sheet_name=sheet, nrows=nrows, header=header, engine='openpyxl')
 
 @cache_data_smart(show_spinner=False)
 def load_full(file_bytes: bytes, sheet: str, header: int):
@@ -324,7 +318,6 @@ def plot_curves_percent_with_months(df_wide: pd.DataFrame,
         showlegend=show_leg,
     )
 
-    st.plotly_chart(fig, use_container_width=True)
     return fig
 # ──────────────────────────────────────────────────────────────────────────────
 # Integrity checks (vectorized)
@@ -658,22 +651,29 @@ def compute_vintage_default_summary(raw_df: pd.DataFrame, dpd_threshold: int) ->
 # ──────────────────────────────────────────────────────────────────────────────
 # UI
 # ──────────────────────────────────────────────────────────────────────────────
+with st.sidebar:
+    st.header('Instructions')
+    st.markdown(
+        "1. Configure settings below.\n"
+        "2. Upload an Excel (.xlsx) file.\n"
+        "3. Click **Load dataset**.\n"
+        "4. Explore the tabs for integrity checks, tables, and charts."
+    )
+
+st.header('Settings')
+dpd_threshold = st.number_input('Default if Days past due ≥', min_value=1, max_value=365, value=90, step=1)
+pretty_ints = st.checkbox(
+    'Thousands separators for integer columns',
+    value=False,
+    help='Shows 12,345 instead of 12345; disables numeric sorting on those two columns.',
+)
+
 st.subheader('Upload Excel')
 uploaded = st.file_uploader('Upload a .xlsx file', type=['xlsx'], accept_multiple_files=False)
 
 # Persist full dataset
 if 'df_full' not in st.session_state:
     st.session_state['df_full'] = None
-
-# Sidebar settings shared across tabs
-with st.sidebar:
-    st.header('Settings')
-    dpd_threshold = st.number_input('Default if Days past due ≥', min_value=1, max_value=365, value=90, step=1)
-    pretty_ints = st.checkbox(
-        'Thousands separators for integer columns',
-        value=False,
-        help='Shows 12,345 instead of 12345; disables numeric sorting on those two columns.',
-    )
 
 if uploaded:
     size_mb = uploaded.size / (1024 * 1024)
@@ -686,65 +686,56 @@ if uploaded:
     sheet = st.selectbox('Select sheet', options=names, index=0)
     header_row = st.number_input('Header row [1 means first row]', min_value=1, value=1, step=1)
 
-    # Preview (fast)
-    with st.status('Reading a fast preview...', expanded=False) as status:
-        preview_df = load_preview(uploaded.getvalue(), sheet=sheet, nrows=PREVIEW_ROWS, header=header_row - 1)
-        status.update(label='Preview ready.', state='complete')
-    st.write(f'Preview, up to {PREVIEW_ROWS:,} rows')
-    st.dataframe(preview_df.head(1000), use_container_width=True)
-
-    st.divider()
-
-    # Full
-    if st.button('Load full dataset', type='primary'):
-        with st.status('Loading full dataset...', expanded=False) as status:
+    if st.button('Load dataset', type='primary'):
+        with st.status('Loading dataset...', expanded=False) as status:
             df_full = load_full(uploaded.getvalue(), sheet=sheet, header=header_row - 1)
             st.session_state['df_full'] = df_full
-            status.update(label='Full dataset loaded.', state='complete')
+            status.update(label='Dataset loaded.', state='complete')
 
-    st.divider()
-
-    tab_integrity, tab_tables, tab_charts = st.tabs(["Integrity", "Tables", "Charts"])
-
-    # Integrity
-    with tab_integrity:
-        st.subheader('Integrity checks, PDF (summary only) & Excel export')
-        dataset_choice = st.radio('Choose dataset for checks', options=('Preview', 'Full (if loaded)'), horizontal=True)
-        chosen_df_raw = preview_df if dataset_choice == 'Preview' or st.session_state['df_full'] is None else st.session_state['df_full']
-        dataset_label = 'Preview' if (dataset_choice == 'Preview' or st.session_state['df_full'] is None) else 'Full'
-
-        if st.button('Run integrity checks and generate outputs'):
-            with st.status('Running checks...', expanded=False):
-                summary, issues_df, vintage_issues_df = run_integrity_checks(chosen_df_raw, dpd_threshold=dpd_threshold)
-
-            if 'fatal' in summary:
-                st.error(summary['fatal'])
-            else:
-                st.success('Checks complete.')
-                st.json(summary)
-
-                pdf_bytes = export_integrity_pdf(summary, dataset_label=dataset_label)
-                st.download_button('Download integrity report (PDF, summary-only)', pdf_bytes,
-                                   'integrity_report.pdf', 'application/pdf')
-
-                xlsx_bytes = export_issues_excel(issues_df, vintage_issues_df)
-                st.download_button('Download issues sample (Excel)', xlsx_bytes,
-                                   'integrity_issues_sample.xlsx',
-                                   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-
-                if issues_df is not None and not issues_df.empty:
-                    st.caption('Row-level issues (sample)')
-                    st.dataframe(issues_df.head(200), use_container_width=True)
-                else:
-                    st.info('No row-level issues sampled.')
-
-                if vintage_issues_df is not None and not vintage_issues_df.empty:
-                    st.caption('Vintage/cohort issues')
-                    st.dataframe(vintage_issues_df.head(200), use_container_width=True)
-                else:
-                    st.info('No vintage-level issues detected.')
-
+    if st.session_state['df_full'] is not None:
         st.divider()
+        chosen_df_raw = st.session_state['df_full']
+        tab_integrity, tab_tables, tab_charts = st.tabs(["Integrity", "Tables", "Charts"])
+
+        # Integrity
+        with tab_integrity:
+            st.subheader('Integrity checks, PDF (summary only) & Excel export')
+            dataset_label = 'Full'
+
+            if st.button('Run integrity checks and generate outputs'):
+                with st.status('Running checks...', expanded=False):
+                    summary, issues_df, vintage_issues_df = run_integrity_checks(chosen_df_raw, dpd_threshold=dpd_threshold)
+
+                if 'fatal' in summary:
+                    st.error(summary['fatal'])
+                else:
+                    st.success('Checks complete.')
+                    st.json(summary)
+
+                    pdf_bytes = export_integrity_pdf(summary, dataset_label=dataset_label)
+                    st.download_button('Download integrity report (PDF, summary-only)', pdf_bytes,
+                                       'integrity_report.pdf', 'application/pdf')
+
+                    xlsx_bytes = export_issues_excel(issues_df, vintage_issues_df)
+                    st.download_button('Download issues sample (Excel)', xlsx_bytes,
+                                       'integrity_issues_sample.xlsx',
+                                       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+                    if issues_df is not None and not issues_df.empty:
+                        st.caption('Row-level issues (sample)')
+                        st.dataframe(issues_df.head(200), use_container_width=True)
+                    else:
+                        st.info('No row-level issues sampled.')
+
+                    if vintage_issues_df is not None and not vintage_issues_df.empty:
+                        st.caption('Vintage/cohort issues')
+                        st.dataframe(vintage_issues_df.head(200), use_container_width=True)
+                    else:
+                        st.info('No vintage-level issues detected.')
+
+            st.divider()
+
+    
 
     # ---- Vintage table (explicit formatting) ----
     with tab_tables:
@@ -862,6 +853,7 @@ if uploaded:
 
 else:
     st.caption('Upload an Excel to continue.')
+
 
 
 
