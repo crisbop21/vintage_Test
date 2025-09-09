@@ -84,7 +84,7 @@ st.markdown(
             background-color: {WB_SECONDARY};
             padding: var(--space-3);
         }}
-        [data-testid="stSidebar"] * {
+         [data-testid="stSidebar"] * {
             color: white !important;
         }
         .block-container {{
@@ -944,3 +944,4 @@ with right:
     else:
         st.caption('Upload an Excel to continue.')
         
+
