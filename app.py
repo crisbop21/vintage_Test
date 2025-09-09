@@ -321,8 +321,19 @@ def _years_list(ser: pd.Series) -> list:
 
 def run_integrity_checks(df: pd.DataFrame, dpd_threshold: int, gap_days: int = 120, after_mat_tol_days: int = 31):
     summary = {}
-    row_issues = []
     vintage_issues = []
+    row_issue_map: dict[int, list[str]] = {}
+
+    def track(mask: pd.Series, issue: str, data: pd.DataFrame = None):
+        """Add up to 50 offending rows for `issue` using the index of `data`."""
+        nonlocal row_issue_map
+        if data is None:
+            data = dfn
+        mask = mask.fillna(False)
+        if mask.any():
+            idxs = data[mask].head(50).index
+            for i in idxs:
+                row_issue_map.setdefault(int(i), []).append(issue)
 
     try:
         dfn = normalize_columns(df)
@@ -338,44 +349,46 @@ def run_integrity_checks(df: pd.DataFrame, dpd_threshold: int, gap_days: int = 1
               'Days past due','Origination amount','Current amount']:
         coerced_nan = dfn[c].isna() & dfn[f'__orig_{c}'].notna()
         summary[f'Non-parsable {c} (after coercion)'] = int(coerced_nan.sum())
-        if coerced_nan.any():
-            row_issues.append(dfn[coerced_nan].head(50).assign(issue=f'Non-parsable {c}'))
+        track(coerced_nan, f'Non-parsable {c}')
+
 
     summary['Years (Origination)'] = _years_list(dfn['Origination date'])
     summary['Years (Observation)'] = _years_list(dfn['Observation date'])
     summary['Years (Maturity)']    = _years_list(dfn['Maturity date'])
 
-    # Date logic
+
+        # Date logic
     mask_obs_before_orig = dfn['Observation date'] < dfn['Origination date']
     summary['Observation before Origination'] = int(mask_obs_before_orig.sum())
-    if mask_obs_before_orig.any():
-        row_issues.append(dfn[mask_obs_before_orig].head(50).assign(issue='Observation before Origination'))
+    track(mask_obs_before_orig, 'Observation before Origination')
 
     mask_mat_before_orig = dfn['Maturity date'] < dfn['Origination date']
     summary['Maturity before Origination'] = int(mask_mat_before_orig.sum())
-    if mask_mat_before_orig.any():
-        row_issues.append(dfn[mask_mat_before_orig].head(50).assign(issue='Maturity before Origination'))
+    track(mask_mat_before_orig, 'Maturity before Origination')
 
     mask_obs_after_mat = dfn['Observation date'] > (dfn['Maturity date'] + pd.to_timedelta(after_mat_tol_days, unit='D'))
     summary['Observation well after Maturity (> tol)'] = int(mask_obs_after_mat.sum())
-    if mask_obs_after_mat.any():
-        row_issues.append(dfn[mask_obs_after_mat].head(50).assign(issue='Observation well after Maturity'))
+    track(mask_obs_after_mat, 'Observation well after Maturity')
+
+
+    
 
     # Snapshot uniqueness & continuity
     dup_mask = dfn.duplicated(subset=['Loan ID', 'Observation date'], keep=False)
     summary['Duplicate snapshots (Loan ID + Observation date)'] = int(dup_mask.sum())
-    if dup_mask.any():
-        row_issues.append(dfn[dup_mask].head(50).assign(issue='Duplicate snapshot'))
+    track(dup_mask, 'Duplicate snapshot')
 
     multi_orig = dfn.groupby('Loan ID')['Origination date'].nunique() > 1
     summary['Loans with multiple Origination dates'] = int(multi_orig.sum())
     if multi_orig.any():
-        row_issues.append(dfn[dfn['Loan ID'].isin(multi_orig[multi_orig].index)].head(50).assign(issue='Multiple origination dates'))
+        mask_multi_orig = dfn['Loan ID'].isin(multi_orig[multi_orig].index)
+        track(mask_multi_orig, 'Multiple origination dates')
 
     multi_mat = dfn.groupby('Loan ID')['Maturity date'].nunique() > 1
     summary['Loans with changing Maturity date'] = int(multi_mat.sum())
     if multi_mat.any():
-        row_issues.append(dfn[dfn['Loan ID'].isin(multi_mat[multi_mat].index)].head(50).assign(issue='Maturity date changed'))
+        mask_multi_mat = dfn['Loan ID'].isin(multi_mat[multi_mat].index)
+        track(mask_multi_mat, 'Maturity date changed')
 
     dfn = dfn.sort_values(['Loan ID','Observation date'])
     diffs_days = dfn.groupby('Loan ID', sort=False)['Observation date'].diff().dt.days
@@ -383,53 +396,45 @@ def run_integrity_checks(df: pd.DataFrame, dpd_threshold: int, gap_days: int = 1
     large_gap = diffs_days > gap_days
     summary['Out-of-order snapshots'] = int(out_of_order.fillna(False).sum())
     summary[f'Large gaps in Observation (>{gap_days} days)'] = int(large_gap.fillna(False).sum())
-    if out_of_order.any():
-        row_issues.append(dfn[out_of_order.fillna(False)].head(50).assign(issue='Out-of-order snapshots'))
-    if large_gap.any():
-        row_issues.append(dfn[large_gap.fillna(False)].head(50).assign(issue='Large gap between snapshots'))
+    track(out_of_order, 'Out-of-order snapshots')
+    track(large_gap, 'Large gap between snapshots')
 
     # DPD quality
     neg_dpd_mask = dfn['Days past due'] < 0
     summary['Negative Days past due'] = int(neg_dpd_mask.sum())
-    if neg_dpd_mask.any():
-        row_issues.append(dfn[neg_dpd_mask].head(50).assign(issue='Negative DPD'))
+    track(neg_dpd_mask, 'Negative DPD')
 
     non_int_mask = dfn['Days past due'].notna() & ((dfn['Days past due'] % 1) != 0)
     summary['Non-integer DPD values'] = int(non_int_mask.sum())
-    if non_int_mask.any():
-        row_issues.append(dfn[non_int_mask].head(50).assign(issue='Non-integer DPD'))
+    track(non_int_mask, 'Non-integer DPD')
 
     extreme_dpd_mask = dfn['Days past due'] > 3650
     summary['Extreme DPD (> 3650)'] = int(extreme_dpd_mask.sum())
-    if extreme_dpd_mask.any():
-        row_issues.append(dfn[extreme_dpd_mask].head(50).assign(issue='Extreme DPD'))
+    track(extreme_dpd_mask, 'Extreme DPD')
 
     prev_dpd = dfn.groupby('Loan ID', sort=False)['Days past due'].shift()
     cure_mask = (prev_dpd >= 180) & (dfn['Days past due'] == 0)
     summary['Sudden cures (>=180 to 0 next)'] = int(cure_mask.fillna(False).sum())
-    if cure_mask.any():
-        row_issues.append(dfn[cure_mask.fillna(False)].head(50).assign(issue='Sudden cure 180->0'))
-
+    track(cure_mask, 'Sudden cure 180->0')
+   
     # Amounts
     orig_amt_nonpos = dfn['Origination amount'] <= 0
     summary['Origination amount <= 0'] = int(orig_amt_nonpos.sum())
-    if orig_amt_nonpos.any():
-        row_issues.append(dfn[orig_amt_nonpos].head(50).assign(issue='Non-positive Origination amount'))
+    track(orig_amt_nonpos, 'Non-positive Origination amount')
 
     orig_amt_changes = dfn.groupby('Loan ID')['Origination amount'].nunique() > 1
     summary['Loans with changing Origination amount'] = int(orig_amt_changes.sum())
     if orig_amt_changes.any():
-        row_issues.append(dfn[dfn['Loan ID'].isin(orig_amt_changes[orig_amt_changes].index)].head(50).assign(issue='Origination amount changed'))
+        mask_orig_amt_changes = dfn['Loan ID'].isin(orig_amt_changes[orig_amt_changes].index)
+        track(mask_orig_amt_changes, 'Origination amount changed')
 
     curr_amt_neg = dfn['Current amount'] < 0
     summary['Negative Current amount'] = int(curr_amt_neg.sum())
-    if curr_amt_neg.any():
-        row_issues.append(dfn[curr_amt_neg].head(50).assign(issue='Negative Current amount'))
+    track(curr_amt_neg, 'Negative Current amount')
 
     curr_gt_orig = dfn['Current amount'] > dfn['Origination amount']
     summary['Current amount > Origination amount'] = int(curr_gt_orig.sum())
-    if curr_gt_orig.any():
-        row_issues.append(dfn[curr_gt_orig].head(50).assign(issue='Current > Origination'))
+    track(curr_gt_orig, 'Current > Origination')
 
     # Consistency + QOB aggregation sanity
     dfd = add_vintage_mob(dfn).sort_values(['Loan ID','Observation date'])
@@ -437,8 +442,7 @@ def run_integrity_checks(df: pd.DataFrame, dpd_threshold: int, gap_days: int = 1
     dfd['is_def_cum'] = dfd.groupby('Loan ID', sort=False)['is_def'].cummax()
     def_cum_reset = dfd.groupby('Loan ID', sort=False)['is_def_cum'].diff() < 0
     summary['is_def_cum resets (should be 0)'] = int(def_cum_reset.fillna(False).sum())
-    if def_cum_reset.any():
-        row_issues.append(dfd[def_cum_reset.fillna(False)].head(50).assign(issue='is_def_cum reset'))
+    track(def_cum_reset, 'is_def_cum reset', data=dfd)
 
     dfd_q = add_qob(dfd)
     agg = dfd_q.groupby(['Vintage','QOB'], sort=False).agg(
@@ -488,9 +492,17 @@ def run_integrity_checks(df: pd.DataFrame, dpd_threshold: int, gap_days: int = 1
     summary['Vintages with non-monotone raw default rate (QOB)'] = len(non_monotone)
     if non_monotone:
         vintage_issues.append(pd.DataFrame({'Vintage': non_monotone,'issue': 'Raw default rate not monotone (QOB)'}))
+    if row_issue_map:
+        sample_indices = list(row_issue_map.keys())
+        rows = dfn.loc[sample_indices].copy()
+        rows['issues'] = ['; '.join(row_issue_map[idx]) for idx in sample_indices]
+        issues_df = rows.reset_index()
+    else:
+        issues_df = pd.DataFrame()
 
-    issues_df = pd.concat(row_issues, ignore_index=True) if row_issues else pd.DataFrame()
     vintage_issues_df = pd.concat(vintage_issues, ignore_index=True) if vintage_issues else pd.DataFrame()
+
+    
 
     summary['Rows (total)'] = int(len(dfn))
     summary['Distinct loans'] = int(dfn['Loan ID'].nunique())
@@ -582,15 +594,15 @@ def export_integrity_pdf(summary: dict, dataset_label: str = 'Full dataset') -> 
         pdf.savefig(fig, bbox_inches='tight'); plt.close(fig)
     return buf.getvalue()
 
-def export_issues_excel(row_issues: pd.DataFrame, vintage_issues: pd.DataFrame) -> bytes:
-    out = BytesIO()
-    with pd.ExcelWriter(out, engine='xlsxwriter') as xw:
-        (row_issues if (row_issues is not None and not row_issues.empty)
-         else pd.DataFrame({'note':['No row-level issues sampled']})).to_excel(xw, index=False, sheet_name='Row issues')
-        (vintage_issues if (vintage_issues is not None and not vintage_issues.empty)
-         else pd.DataFrame({'note':['No vintage-level issues']})).to_excel(xw, index=False, sheet_name='Vintage issues')
-    return out.getvalue()
 
+def export_issues_excel(issues_df: pd.DataFrame, vintage_issues: pd.DataFrame) -> bytes:
+    out = BytesIO()␊
+    with pd.ExcelWriter(out, engine='xlsxwriter') as xw:␊
+        (issues_df if (issues_df is not None and not issues_df.empty)
+         else pd.DataFrame({'note':['No row-level issues sampled']})).to_excel(xw, index=False, sheet_name='Row issues')␊
+        (vintage_issues if (vintage_issues is not None and not vintage_issues.empty)␊
+         else pd.DataFrame({'note':['No vintage-level issues']})).to_excel(xw, index=False, sheet_name='Vintage issues')␊
+    return out.getvalue()
 # ──────────────────────────────────────────────────────────────────────────────
 # Vintage default summary (Cum_PD, Obs_Time, annualized rate)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -804,6 +816,7 @@ if uploaded:
 
 else:
     st.caption('Upload an Excel to continue.')
+
 
 
 
