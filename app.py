@@ -127,6 +127,9 @@ st.markdown(
          p {{
             max-width: 75ch;
         }}
+        input[type="checkbox"], input[type="radio"], input[type="range"] {{
+            accent-color: {WB_PRIMARY};
+        }}
         [data-baseweb="tag"] {{
             background-color: {WB_PRIMARY};
         }}
@@ -966,6 +969,7 @@ with right:
     else:
         st.caption('Upload an Excel to continue.')
         
+
 
 
 
