@@ -425,7 +425,7 @@ def plot_curves_percent_with_months(df_wide: pd.DataFrame,
         yaxis=dict(title='Cumulative default rate', tickformat='.2%'),
         hovermode='x unified',
         showlegend=show_leg,
-        legend=dict(bgcolor=WB_PRIMARY, font=dict(color="white")),
+        legend=dict(bgcolor="white", font=dict(color="black")),
     )
 
     return fig
@@ -966,6 +966,7 @@ with right:
     else:
         st.caption('Upload an Excel to continue.')
         
+
 
 
 
