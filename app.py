@@ -124,8 +124,17 @@ st.markdown(
             background-color: {WB_PRIMARY};
             color: white !important;
         }}
-        [data-baseweb="tag"] [data-baseweb="close"] {{
+         p {{
+            max-width: 75ch;
+        }}
+        [data-baseweb="tag"] {{
+            background-color: {WB_PRIMARY};
+        }}
+        [data-baseweb="tag"], [data-baseweb="tag"] * {{
             color: white !important;
+        }}
+        [data-baseweb="tag"] [data-baseweb="close"] svg {{
+            fill: white !important;
         }}
     </style>
     """,
@@ -957,6 +966,7 @@ with right:
     else:
         st.caption('Upload an Excel to continue.')
         
+
 
 
 
