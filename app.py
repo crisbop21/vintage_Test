@@ -24,7 +24,7 @@ matplotlib.rcParams["axes.unicode_minus"] = False
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 import plotly.graph_objects as go
-from plotly.colors import hex_to_rgb
+from plotly.colors import hex_to_rgb, qualitative, sequential
 import plotly.io as pio
 
 import streamlit as st
@@ -258,6 +258,7 @@ def plot_curves_percent_with_months(df_wide: pd.DataFrame,
                                     title: str,
                                     show_legend: bool = True,
                                     legend_limit: int = 40,
+                                    palette: str = "Gradient",
                                     base_color: Optional[str] = None,
                                     line_width: int = 1):
     if df_wide.empty:
@@ -287,8 +288,21 @@ def plot_curves_percent_with_months(df_wide: pd.DataFrame,
             palette.append(f'rgb({ri},{gi},{bi})')
         return palette
 
+    palette_choice = palette.lower()
     base_color = base_color or st.get_option("theme.primaryColor") or "#1f77b4"
-    palette = _generate_palette(base_color, N)
+    if palette_choice == "gradient":
+        palette_colors = _generate_palette(base_color, N)
+    elif palette_choice == "plotly":
+        palette_colors = qualitative.Plotly
+    elif palette_choice == "viridis":
+        palette_colors = sequential.Viridis
+    else:
+        palette_colors = qualitative.Plotly
+    if len(palette_colors) < N:
+        times = int(np.ceil(N / len(palette_colors)))
+        palette_colors = (palette_colors * times)[:N]
+    else:
+        palette_colors = palette_colors[:N]
 
     fig = go.Figure()
     show_leg = show_legend and (df_wide.shape[1] <= legend_limit)
@@ -298,6 +312,7 @@ def plot_curves_percent_with_months(df_wide: pd.DataFrame,
             y=Y[:, i],
             mode='lines',
             name=str(col),
+            line=dict(color=palette_colors[i], width=line_width),
             line=dict(color=palette[i], width=line_width),
             hovertemplate=f"Vintage: {col}<br>Month: %{{x}}<br>Default rate: %{{y:.2%}}<extra></extra>"
         ))
@@ -657,7 +672,12 @@ with st.sidebar:
     dpd_threshold = st.number_input('Default if Days past due ≥', min_value=1, max_value=365, value=90, step=1)
     max_months_show = st.slider('Show curves up to (months)', min_value=12, max_value=180, value=60, step=6)
     show_legend = st.checkbox('Show legend in chart', value=True)
-    base_color = st.color_picker('Base chart color', value=st.get_option("theme.primaryColor") or '#1f77b4')
+    palette_option = st.selectbox('Color palette', ['Gradient', 'Plotly', 'Viridis'])
+    base_color = st.color_picker(
+        'Base chart color',
+        value=st.get_option("theme.primaryColor") or '#1f77b4',
+        help='Used when Gradient palette is selected.',
+    )
     line_width = st.slider('Line width', min_value=1, max_value=5, value=1)
 
     pretty_ints = st.checkbox(
@@ -813,9 +833,15 @@ if uploaded:
                 df_plot = df_plot_any[selected_vintages]
                 prog_bar.progress(0.9, text="Rendering chart …")
                 ttl = f'Vintage Default-Rate Evolution | DPD≥{dpd_threshold}'
-                fig = plot_curves_percent_with_months(df_wide=df_plot, title=ttl,
-                                                      show_legend=show_legend, legend_limit=50,
-                                                      base_color=base_color, line_width=line_width)
+                fig = plot_curves_percent_with_months(
+                    df_wide=df_plot,
+                    title=ttl,
+                    show_legend=show_legend,
+                    legend_limit=50,
+                    palette=palette_option,
+                    base_color=base_color,
+                    line_width=line_width,
+                )
                 prog_bar.progress(1.0, text="Done")
 
                 export_df = df_plot.reset_index().rename(columns={"QOB":"QOB"})
@@ -830,3 +856,4 @@ if uploaded:
 
 else:
     st.caption('Upload an Excel to continue.')
+
