@@ -54,11 +54,11 @@ st.set_page_config(page_title='Vintage Curves (QOB) + Integrity — Ultra-Fast',
 # Density selector allows comfortable or compact spacing modes
 density_mode = st.sidebar.selectbox('Density', ['Comfortable', 'Compact'], index=0)
 
-# World Bank-inspired dark theme
-WB_PRIMARY = "#009FDA"
-WB_SECONDARY = "#002244"
-WB_BG = "#000000"
-WB_TEXT = "#FFFFFF"
+# Blue palette with white background
+WB_PRIMARY = "#5B9BD5"      # Button and link color
+WB_SECONDARY = "#87CEEB"    # Sidebar background
+WB_BG = "#FFFFFF"           # Page background
+WB_TEXT = "#002244"         # General text color
 st.markdown(
     f"""
     <style>
@@ -684,7 +684,7 @@ def export_integrity_pdf(summary: dict, dataset_label: str = 'Full dataset') -> 
         for line in explanations:
             wrapped_desc.extend(textwrap.wrap(line, width=90))
         for line in wrapped_desc:
-            plt.text(0.05, y, line, ha='left', va='top', fontsize=8, color='gray'); y -= 0.03
+            plt.text(0.05, y, line, ha='left', va='top', fontsize=8, color='#5B9BD5'); y -= 0.03
         pdf.savefig(fig, bbox_inches='tight'); plt.close(fig)
     return buf.getvalue()
 
@@ -744,9 +744,9 @@ with st.sidebar:
         "4. Explore the tabs for integrity checks, tables, and charts."
     )
 
-left, center, right = st.columns([1, 2, 1])
+left, right = st.columns(2)
 
-with center:
+with left:
     st.header('Settings')
     dpd_threshold = st.number_input('Default if Days past due ≥', min_value=1, max_value=365, value=90, step=1)
     pretty_ints = st.checkbox(
@@ -942,6 +942,7 @@ with center:
 with right:
     st.markdown("### Tips")
     st.markdown("Use the sidebar for instructions and upload your Excel file to begin.")
+
 
 
 
