@@ -712,7 +712,7 @@ if uploaded:
             st.session_state['df_full'] = df_full
             status.update(label='Full dataset loaded.', state='complete')
 
-     st.divider()
+    st.divider()
 
     tab_integrity, tab_tables, tab_charts = st.tabs(["Integrity", "Tables", "Charts"])
 
@@ -860,5 +860,6 @@ if uploaded:
 
 else:
     st.caption('Upload an Excel to continue.')
+
 
 
