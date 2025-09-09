@@ -100,6 +100,8 @@ st.markdown(
             margin-bottom: var(--space-2);
             padding: var(--space-1) var(--space-2);
             border: none;
+        }}
+        .stButton>button, .stButton>button * {{
             color: white !important;
         }}
         .stButton>button:hover {{
@@ -947,6 +949,7 @@ with right:
     else:
         st.caption('Upload an Excel to continue.')
         
+
 
 
 
