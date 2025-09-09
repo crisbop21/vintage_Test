@@ -50,7 +50,7 @@ except Exception:
     NUMBA_OK = False
 
 st.set_page_config(page_title='Vintage Curves (QOB) + Integrity — Ultra-Fast', layout='wide')
-st.title('Vintage Default-Rate Evolution (QOB) & Data Integrity — Ultra-Fast')
+st.title('Vintage Default-Rate Tool')
 
 MAX_MB = 50
 RESERVED_COLS = {
@@ -791,7 +791,7 @@ if uploaded:
 
     # ---- Vintage curves — QOB engine, months axis, % y, legend ----
     with tab_charts:
-        st.subheader('Vintage curves (months on axis; QOB engine for stable denominators)')
+        st.subheader('Vintage curves (months on axis)')
         col_chart, col_settings = st.columns([3, 1])
 
         with col_settings:
@@ -853,6 +853,7 @@ if uploaded:
 
 else:
     st.caption('Upload an Excel to continue.')
+
 
 
 
