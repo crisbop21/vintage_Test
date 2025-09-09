@@ -51,6 +51,9 @@ except Exception:
 
 st.set_page_config(page_title='Vintage Curves (QOB) + Integrity — Ultra-Fast', layout='wide')
 
+# Density selector allows comfortable or compact spacing modes
+density_mode = st.sidebar.selectbox('Density', ['Comfortable', 'Compact'], index=0)
+
 # World Bank-inspired dark theme
 WB_PRIMARY = "#009FDA"
 WB_SECONDARY = "#002244"
@@ -59,25 +62,77 @@ WB_TEXT = "#FFFFFF"
 st.markdown(
     f"""
     <style>
+        :root {{
+            --space-1: 8px;
+            --space-2: 16px;
+            --space-3: 24px;
+            --space-4: 32px;
+            --space-5: 48px;
+        }}
         html, body, [data-testid="stAppViewContainer"], .stApp {{
             background-color: {WB_BG};
+            line-height: 1.5;
+        }}
+        [data-testid="stAppViewContainer"] {{
+            padding: var(--space-3);
         }}
         *, *::placeholder {{
             color: {WB_TEXT} !important;
         }}
         [data-testid="stSidebar"] {{
             background-color: {WB_SECONDARY};
+            padding: var(--space-3);
+        }}
+        .block-container {{
+            padding-top: var(--space-4);
+            padding-bottom: var(--space-4);
         }}
         .stButton>button {{
             background-color: {WB_PRIMARY};
+            margin-top: var(--space-2);
+            margin-bottom: var(--space-2);
+            padding: var(--space-1) var(--space-2);
+            border: none;
+            color: {WB_TEXT} !important;
+        }}
+        .stButton>button:hover {{
+            filter: brightness(1.1);
+        }}
+        .stButton>button:active {{
+            filter: brightness(0.9);
+        }}
+        .stButton>button:focus {{
+            outline: 3px solid {WB_TEXT};
+            outline-offset: 2px;
         }}
         a {{
             color: {WB_PRIMARY} !important;
+        }}
+        p {{
+            max-width: 75ch;
         }}
     </style>
     """,
     unsafe_allow_html=True,
 )
+
+# Compact density adjustments
+if density_mode == 'Compact':
+    st.markdown(
+        """
+        <style>
+            [data-testid="stAppViewContainer"] {
+                padding: var(--space-2);
+            }
+            .stButton>button {
+                padding: var(--space-1);
+                margin-top: var(--space-1);
+                margin-bottom: var(--space-1);
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 st.title('Vintage Default-Rate Tool')
 
@@ -887,5 +942,6 @@ with center:
 with right:
     st.markdown("### Tips")
     st.markdown("Use the sidebar for instructions and upload your Excel file to begin.")
+
 
 
