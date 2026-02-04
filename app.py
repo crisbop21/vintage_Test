@@ -196,18 +196,22 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     if not col_obs:      missing.append('Observation date')
     if not col_mat:      missing.append('Maturity date')
     if not col_orig_amt: missing.append('Origination amount')
-    if not col_curr_amt: missing.append('Current amount')
     if missing:
         raise KeyError(f"Missing required column(s): {', '.join(missing)}")
-    return df.rename(columns={
+    rename_map = {
         col_loan:     'Loan ID',
         col_dpd:      'Days past due',
         col_orig:     'Origination date',
         col_obs:      'Observation date',
         col_mat:      'Maturity date',
         col_orig_amt: 'Origination amount',
-        col_curr_amt: 'Current amount',
-    })
+    }
+    if col_curr_amt:
+        rename_map[col_curr_amt] = 'Current amount'
+    df = df.rename(columns=rename_map)
+    if 'Current amount' not in df.columns:
+        df['Current amount'] = np.nan
+    return df
 
 def ensure_types(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -254,10 +258,11 @@ def _df_key(df: pd.DataFrame) -> str:
                         'Days past due','Origination amount','Current amount'] if c in df.columns]
     if not cols:
         cols = list(df.columns)
-    sample = df[cols].head(200000) if len(df) > 200000 else df[cols]
+    parts = [df[cols].head(100000), df[cols].tail(1000)]
+    sample = pd.concat(parts).drop_duplicates()
     h = pd.util.hash_pandas_object(sample, index=True).values
     m = hashlib.blake2b(digest_size=16)
-    m.update(h.tobytes()); m.update(str(sample.shape).encode()); m.update(",".join(map(str, sample.columns)).encode())
+    m.update(h.tobytes()); m.update(str(df.shape).encode()); m.update(",".join(map(str, sample.columns)).encode())
     return m.hexdigest()
 
 @cache_data_smart(show_spinner=False, hash_funcs={pd.DataFrame: _df_key})
@@ -270,6 +275,7 @@ def prepare_base_cached(raw_df: pd.DataFrame) -> pd.DataFrame:
     for c in ['Days past due','Origination amount','Current amount']:
         if c in dfn.columns:
             dfn[c] = dfn[c].astype('float32')
+    dfn = dfn.drop_duplicates(subset=['Loan ID','Observation date'], keep='last')
     dfn = dfn.sort_values(['Loan ID','Observation date'], kind='mergesort')
     return dfn
 
@@ -314,47 +320,72 @@ def mk_progress_updater(bar, steps: int = 5) -> Callable[[str], None]:
     return _update
 
 # ──────────────────────────────────────────────────────────────────────────────
-# QUARTER (QOB) chart pipeline
+# Chart pipeline (supports QOB and MOB, smoothing toggles, cure-adjusted mode)
 # ──────────────────────────────────────────────────────────────────────────────
-def build_chart_data_fast_quarter(raw_df: pd.DataFrame, dpd_threshold: int, max_qob: int = 20,
-                                  prog: Optional[Callable[[str], None]] = None) -> pd.DataFrame:
+def build_chart_data_fast(raw_df: pd.DataFrame, dpd_threshold: int,
+                          max_periods: int = 20,
+                          granularity: str = "QOB",
+                          smooth: bool = True,
+                          force_monotone: bool = True,
+                          cure_adjusted: bool = False,
+                          exclude_indices: Optional[set] = None,
+                          prog: Optional[Callable[[str], None]] = None) -> tuple[pd.DataFrame, dict]:
     if prog: prog("Preparing base dataset …")
     base = prepare_base_cached(raw_df)
-    base = add_qob(base)
+
+    if exclude_indices:
+        base = base.loc[~base.index.isin(exclude_indices)]
+
+    period_col = granularity.upper()
+    if period_col == "QOB":
+        base = add_qob(base)
+    else:
+        period_col = "MOB"
 
     if prog: prog("Computing default flags …")
     flags = (base['Days past due'].to_numpy(np.float32, copy=False) >= dpd_threshold).astype(np.uint8, copy=False)
-    codes = base['Loan ID'].cat.codes.to_numpy(np.int64, copy=False)
 
-    if prog: prog("Applying per-loan cummax …")
-    is_def_cum = _cum_or_by_group(codes, flags)
+    if cure_adjusted:
+        is_def = flags
+    else:
+        codes = base['Loan ID'].cat.codes.to_numpy(np.int64, copy=False)
+        if prog: prog("Applying per-loan cummax …")
+        is_def = _cum_or_by_group(codes, flags)
 
-    if prog: prog("Aggregating cohorts (QOB) …")
+    if prog: prog(f"Aggregating cohorts ({period_col}) …")
     agg = (pd.DataFrame({
                 'Vintage': base['Vintage'].to_numpy(),
-                'QOB': base['QOB'].to_numpy(),
-                'is_def_cum': is_def_cum,
+                period_col: base[period_col].to_numpy(),
+                'is_def': is_def,
                 'LoanID': base['Loan ID'].to_numpy()
            })
-           .groupby(['Vintage','QOB'], sort=False)
-           .agg(total_loans=('LoanID','nunique'),
-                total_default=('is_def_cum','sum'))
+           .groupby(['Vintage', period_col], sort=False)
+           .agg(total_loans=('LoanID', 'nunique'),
+                total_default=('is_def', 'sum'))
            .reset_index())
 
     if agg.empty:
         if prog: prog("No data to plot.")
-        return pd.DataFrame()
+        return pd.DataFrame(), {}
 
-    agg['QOB'] = pd.to_numeric(agg['QOB'], errors='coerce').astype('int16')
+    agg[period_col] = pd.to_numeric(agg[period_col], errors='coerce').astype('int16')
     agg['default_rate'] = (agg['total_default'] / agg['total_loans']).astype('float32')
-    max_q = min(int(agg['QOB'].max()), max_qob)
+    max_p = min(int(agg[period_col].max()), max_periods)
 
-    wide = (agg.pivot(index='QOB', columns='Vintage', values='default_rate')
+    # Cohort sizes for legend labels
+    cohort_sizes = (agg.groupby('Vintage')['total_loans'].max()
+                       .to_dict())
+
+    wide = (agg.pivot(index=period_col, columns='Vintage', values='default_rate')
                .sort_index()
-               .reindex(range(1, max_q+1)))
-    wide = wide.rolling(2, 1, center=True).mean().cummax().astype('float32')
-    wide.index.name = 'QOB'
-    return wide
+               .reindex(range(1, max_p + 1)))
+    if smooth:
+        wide = wide.rolling(2, 1, center=True).mean()
+    if force_monotone:
+        wide = wide.cummax()
+    wide = wide.astype('float32')
+    wide.index.name = period_col
+    return wide, cohort_sizes
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Plotting: % y-axis, months x-axis (QOB*3), optional legend
@@ -366,7 +397,8 @@ def plot_curves_percent_with_months(df_wide: pd.DataFrame,
                                     legend_limit: int = 40,
                                     palette: str = "Gradient",
                                     base_color: Optional[str] = None,
-                                    line_width: int = 1):
+                                    line_width: int = 1,
+                                    cohort_sizes: Optional[dict] = None):
     if df_wide.empty:
         st.info('Not enough data to plot.')
         return None
@@ -413,11 +445,14 @@ def plot_curves_percent_with_months(df_wide: pd.DataFrame,
     fig = go.Figure()
     show_leg = show_legend and (df_wide.shape[1] <= legend_limit)
     for i, col in enumerate(df_wide.columns):
+        label = str(col)
+        if cohort_sizes and col in cohort_sizes:
+            label = f"{col} (n={int(cohort_sizes[col]):,})"
         fig.add_trace(go.Scatter(
             x=x_months,
             y=Y[:, i],
             mode='lines',
-            name=str(col),
+            name=label,
             line=dict(color=palette_colors[i], width=line_width),
             hovertemplate=f"Vintage: {col}<br>Month: %{{x}}<br>Default rate: %{{y:.2%}}<extra></extra>"
         ))
@@ -448,13 +483,13 @@ def run_integrity_checks(df: pd.DataFrame, dpd_threshold: int, gap_days: int = 1
     row_issue_map: dict[int, list[str]] = {}
 
     def track(mask: pd.Series, issue: str, data: pd.DataFrame = None):
-        """Add up to 50 offending rows for `issue` using the index of `data`."""
+        """Add up to 500 offending rows for `issue` using the index of `data`."""
         nonlocal row_issue_map
         if data is None:
             data = dfn
         mask = mask.fillna(False)
         if mask.any():
-            idxs = data[mask].head(50).index
+            idxs = data[mask].head(500).index
             for i in idxs:
                 row_issue_map.setdefault(int(i), []).append(issue)
 
@@ -755,7 +790,7 @@ def compute_vintage_default_summary(raw_df: pd.DataFrame, dpd_threshold: int) ->
            .agg(Unique_loans=('Vintage','size'),
                 Defaulted_loans=('defaulted','sum'),
                 Cum_PD=('defaulted','mean'),
-                Observation_Time=('Obs_Time_years','mean')))
+                Observation_Time=('Obs_Time_years','median')))
     m = out['Observation_Time'] > 0
     out['Default_rate_pa'] = np.nan
     out.loc[m, 'Default_rate_pa'] = 1 - np.power(1 - out.loc[m, 'Cum_PD'], 1 / out.loc[m, 'Observation_Time'])
@@ -787,9 +822,11 @@ with left:
     st.subheader('Upload Excel')
     uploaded = st.file_uploader('Upload a .xlsx file', type=['xlsx'], accept_multiple_files=False)
 
-    # Persist full dataset
+    # Persist full dataset and flagged row indices
     if 'df_full' not in st.session_state:
         st.session_state['df_full'] = None
+    if 'flagged_indices' not in st.session_state:
+        st.session_state['flagged_indices'] = set()
 
     if uploaded:
         size_mb = uploaded.size / (1024 * 1024)
@@ -811,6 +848,17 @@ with right:
     if st.session_state['df_full'] is not None:
         st.divider()
         chosen_df_raw = st.session_state['df_full']
+
+        # Basic segmentation filter
+        non_reserved = [c for c in chosen_df_raw.columns
+                        if str(c).strip() not in RESERVED_COLS]
+        seg_col = st.selectbox('Filter by column (optional)', ['None'] + non_reserved)
+        if seg_col != 'None':
+            unique_vals = chosen_df_raw[seg_col].dropna().unique().tolist()
+            selected_vals = st.multiselect(f'Values for {seg_col}', unique_vals, default=unique_vals)
+            if selected_vals:
+                chosen_df_raw = chosen_df_raw[chosen_df_raw[seg_col].isin(selected_vals)]
+
         tab_integrity, tab_tables, tab_charts = st.tabs(["Integrity", "Tables", "Charts"])
 
         # Integrity
@@ -825,6 +873,12 @@ with right:
                 if 'fatal' in summary:
                     st.error(summary['fatal'])
                 else:
+                    # Store flagged row indices for optional exclusion in curves
+                    if issues_df is not None and not issues_df.empty and 'index' in issues_df.columns:
+                        st.session_state['flagged_indices'] = set(issues_df['index'].tolist())
+                    else:
+                        st.session_state['flagged_indices'] = set()
+
                     st.success('Checks complete.')
                     st.json(summary)
 
@@ -839,13 +893,13 @@ with right:
 
                     if issues_df is not None and not issues_df.empty:
                         st.caption('Row-level issues (sample)')
-                        st.dataframe(issues_df.head(200), use_container_width=True)
+                        st.dataframe(issues_df.head(500), use_container_width=True)
                     else:
                         st.info('No row-level issues sampled.')
 
                     if vintage_issues_df is not None and not vintage_issues_df.empty:
                         st.caption('Vintage/cohort issues')
-                        st.dataframe(vintage_issues_df.head(200), use_container_width=True)
+                        st.dataframe(vintage_issues_df.head(500), use_container_width=True)
                     else:
                         st.info('No vintage-level issues detected.')
 
@@ -903,14 +957,28 @@ with right:
 
             st.divider()
 
-        # ---- Vintage curves — QOB engine, months axis, % y, legend ----
+        # ---- Vintage curves ----
         with tab_charts:
             st.subheader('Vintage curves (months on axis)')
             col_chart, col_settings = st.columns([3, 0.5], gap="large")
 
             with col_settings:
                 st.header('Chart settings')
+                granularity = st.selectbox('Granularity', ['Quarterly (QOB)', 'Monthly (MOB)'], index=0)
+                gran_key = 'QOB' if 'QOB' in granularity else 'MOB'
                 max_months_show = st.slider('Show curves up to (months)', min_value=12, max_value=180, value=60, step=6)
+                smooth_curves = st.checkbox('Smooth curves', value=True)
+                force_monotone = st.checkbox('Force monotone (cummax)', value=True)
+                cure_adjusted = st.checkbox(
+                    'Cure-adjusted (point-in-time)',
+                    value=False,
+                    help='Use current DPD status at each snapshot instead of cumulative ever-defaulted flag.',
+                )
+                exclude_flagged = st.checkbox(
+                    'Exclude flagged rows',
+                    value=False,
+                    help='Exclude rows flagged by integrity checks. Run integrity checks first.',
+                )
                 show_legend = st.checkbox('Show legend in chart', value=True)
                 palette_option = st.selectbox('Color palette', ['Gradient', 'Plotly', 'Viridis'])
                 base_color = st.color_picker(
@@ -925,9 +993,22 @@ with right:
                     prog_bar = st.progress(0.0, text="Initializing …")
                     upd = mk_progress_updater(prog_bar, steps=5)
 
-                    max_qob_show = max(1, math.ceil(max_months_show / 3))
-                    df_plot_any = build_chart_data_fast_quarter(
-                        chosen_df_raw, dpd_threshold=dpd_threshold, max_qob=max_qob_show, prog=upd
+                    if gran_key == 'QOB':
+                        max_periods = max(1, math.ceil(max_months_show / 3))
+                    else:
+                        max_periods = max_months_show
+
+                    excl = st.session_state.get('flagged_indices', set()) if exclude_flagged else None
+
+                    df_plot_any, cohort_sizes = build_chart_data_fast(
+                        chosen_df_raw, dpd_threshold=dpd_threshold,
+                        max_periods=max_periods,
+                        granularity=gran_key,
+                        smooth=smooth_curves,
+                        force_monotone=force_monotone,
+                        cure_adjusted=cure_adjusted,
+                        exclude_indices=excl,
+                        prog=upd,
                     )
 
                     if df_plot_any.empty:
@@ -943,6 +1024,8 @@ with right:
                             df_plot = df_plot_any[selected_vintages]
                             prog_bar.progress(0.9, text="Rendering chart …")
                             ttl = f'Vintage Default-Rate Evolution | DPD≥{dpd_threshold}'
+                            if cure_adjusted:
+                                ttl += ' | cure-adjusted'
                             fig = plot_curves_percent_with_months(
                                 df_wide=df_plot,
                                 title=ttl,
@@ -951,16 +1034,20 @@ with right:
                                 palette=palette_option,
                                 base_color=base_color,
                                 line_width=line_width,
+                                cohort_sizes=cohort_sizes,
                             )
                             prog_bar.progress(1.0, text="Done")
 
                             st.plotly_chart(fig, use_container_width=True)
 
-                            export_df = df_plot.reset_index().rename(columns={"QOB":"QOB"})
-                            export_df.insert(0, "Months", export_df["QOB"] * 3)
-                            st.download_button('Download curves (CSV; Months + QOB)',
-                                               export_df.to_csv(index=False).encode('utf-8'),
-                                               'vintage_curves_qob.csv','text/csv')
+                            period_col = df_plot.index.name or gran_key
+                            export_df = df_plot.reset_index()
+                            if gran_key == 'QOB':
+                                export_df.insert(0, "Months", export_df[period_col] * 3)
+                            st.download_button(
+                                f'Download curves (CSV; {gran_key})',
+                                export_df.to_csv(index=False).encode('utf-8'),
+                                f'vintage_curves_{gran_key.lower()}.csv', 'text/csv')
 
                 except Exception as e:
                     st.info(f'Plot skipped, {e}')
