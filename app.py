@@ -120,13 +120,6 @@ st.markdown(
          p {{
             max-width: 75ch;
         }}
-        [data-baseweb="tag"] {{
-            background-color: {WB_PRIMARY};
-            color: white !important;
-        }}
-         p {{
-            max-width: 75ch;
-        }}
         input[type="checkbox"], input[type="radio"], input[type="range"] {{
             accent-color: {WB_PRIMARY};
         }}
@@ -811,7 +804,14 @@ with right:
     if st.session_state['df_full'] is not None:
         st.divider()
         chosen_df_raw = st.session_state['df_full']
-        tab_integrity, tab_tables, tab_charts = st.tabs(["Integrity", "Tables", "Charts"])
+        tab_preview, tab_integrity, tab_tables, tab_charts = st.tabs(["Data Preview", "Integrity", "Tables", "Charts"])
+
+        # Data Preview
+        with tab_preview:
+            st.subheader('Raw data preview')
+            preview_rows = st.slider('Rows to display', min_value=5, max_value=500, value=50, step=5, key='preview_rows')
+            st.dataframe(chosen_df_raw.head(preview_rows), use_container_width=True)
+            st.caption(f'{len(chosen_df_raw):,} rows \u00d7 {len(chosen_df_raw.columns):,} columns total.')
 
         # Integrity
         with tab_integrity:
@@ -963,7 +963,7 @@ with right:
                                                'vintage_curves_qob.csv','text/csv')
 
                 except Exception as e:
-                    st.info(f'Plot skipped, {e}')
+                    st.error(f'Plot skipped: {e}')
 
 
     else:
