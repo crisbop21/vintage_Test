@@ -996,6 +996,7 @@ with right:
         # ---- Vintage table (explicit formatting) ----
         with tab_tables:
             st.subheader('Unique loans & default summary by vintage')
+            summary_df = None
             try:
                 summary_df = compute_vintage_default_summary(chosen_df_raw, dpd_threshold=dpd_threshold)
                 st.caption('Observation_Time = default date − first obs (if defaulted), else last obs − first obs (years).')
@@ -1035,57 +1036,66 @@ with right:
                     .hide(axis="index")
                 )
                 st.dataframe(styler, use_container_width=True)
+            except Exception as e:
+                st.info(f'Could not compute frequency default summary: {e}')
 
-                # ---- Volume-based table ----
-                has_vol = summary_df['Total_volume'].notna().any()
-                if has_vol:
-                    st.markdown("**Volume-based (origination amount)**")
-                    vol_disp = summary_df.rename(columns={
-                        "Total_volume": "Total volume",
-                        "Default_volume": "Default volume",
-                        "Vol_Cum_PD": "Vol Cum PD",
-                        "Vol_Default_rate_pa": "Vol annualized DR",
-                        "Vol_loans_used": "Loans with valid amount",
-                        "Unique_loans": "Unique loans",
-                    })
-                    vol_disp["Vol Cum PD (%)"] = vol_disp["Vol Cum PD"] * 100
-                    vol_disp["Vol annualized DR (%)"] = vol_disp["Vol annualized DR"] * 100
-                    vol_disp["Excluded loans"] = vol_disp["Unique loans"] - vol_disp["Loans with valid amount"]
+            # ---- Volume-based table (separate try/except) ----
+            try:
+                if summary_df is not None and 'Total_volume' in summary_df.columns:
+                    has_vol = summary_df['Total_volume'].notna().any()
+                    if has_vol:
+                        st.markdown("**Volume-based (origination amount)**")
+                        vol_disp = summary_df.copy()
+                        vol_disp = vol_disp.rename(columns={
+                            "Total_volume": "Total volume",
+                            "Default_volume": "Default volume",
+                            "Vol_Cum_PD": "Vol Cum PD",
+                            "Vol_Default_rate_pa": "Vol annualized DR",
+                            "Vol_loans_used": "Loans with valid amount",
+                            "Unique_loans": "Unique loans",
+                        })
+                        vol_disp["Vol Cum PD (%)"] = vol_disp["Vol Cum PD"] * 100
+                        vol_disp["Vol annualized DR (%)"] = vol_disp["Vol annualized DR"] * 100
+                        vol_disp["Loans with valid amount"] = vol_disp["Loans with valid amount"].fillna(0)
+                        vol_disp["Excluded loans"] = (
+                            vol_disp["Unique loans"].fillna(0) - vol_disp["Loans with valid amount"]
+                        )
 
-                    vol_table = vol_disp[[
-                        "Vintage",
-                        "Total volume",
-                        "Default volume",
-                        "Vol Cum PD (%)",
-                        "Vol annualized DR (%)",
-                        "Loans with valid amount",
-                        "Excluded loans",
-                    ]]
-                    vol_styles = {
-                        "Total volume": "{:,.0f}",
-                        "Default volume": "{:,.0f}",
-                        "Vol Cum PD (%)": "{:.2f}",
-                        "Vol annualized DR (%)": "{:.2f}",
-                        "Loans with valid amount": "{:.0f}",
-                        "Excluded loans": "{:.0f}",
-                    }
-                    vol_styler = (
-                        vol_table.style
-                        .format(vol_styles)
-                        .background_gradient(subset=["Vol Cum PD (%)", "Vol annualized DR (%)"], cmap="Reds")
-                        .hide(axis="index")
-                    )
-                    st.dataframe(vol_styler, use_container_width=True)
-                else:
-                    st.info('Volume-based table not available (no valid origination amounts).')
+                        vol_table = vol_disp[[
+                            "Vintage",
+                            "Total volume",
+                            "Default volume",
+                            "Vol Cum PD (%)",
+                            "Vol annualized DR (%)",
+                            "Loans with valid amount",
+                            "Excluded loans",
+                        ]].fillna(0)
+                        vol_styles = {
+                            "Total volume": "{:,.0f}",
+                            "Default volume": "{:,.0f}",
+                            "Vol Cum PD (%)": "{:.2f}",
+                            "Vol annualized DR (%)": "{:.2f}",
+                            "Loans with valid amount": "{:.0f}",
+                            "Excluded loans": "{:.0f}",
+                        }
+                        vol_styler = (
+                            vol_table.style
+                            .format(vol_styles)
+                            .background_gradient(subset=["Vol Cum PD (%)", "Vol annualized DR (%)"], cmap="Reds")
+                            .hide(axis="index")
+                        )
+                        st.dataframe(vol_styler, use_container_width=True)
+                    else:
+                        st.info('Volume-based table not available (no valid origination amounts).')
+            except Exception as e:
+                st.info(f'Could not compute volume default summary: {e}')
 
+            if summary_df is not None:
                 st.download_button(
                     'Download CSV (vintage default summary)',
                     summary_df.to_csv(index=False).encode('utf-8'),
                     'vintage_default_summary.csv','text/csv'
                 )
-            except Exception as e:
-                st.info(f'Could not compute vintage default summary: {e}')
 
             st.divider()
 
