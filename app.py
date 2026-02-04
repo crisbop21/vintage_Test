@@ -320,7 +320,8 @@ def mk_progress_updater(bar, steps: int = 5) -> Callable[[str], None]:
     return _update
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Chart pipeline (supports QOB and MOB, smoothing toggles, cure-adjusted mode)
+# Chart pipeline (supports QOB and MOB, smoothing toggles, cure-adjusted mode,
+# frequency or volume weighting)
 # ──────────────────────────────────────────────────────────────────────────────
 def build_chart_data_fast(raw_df: pd.DataFrame, dpd_threshold: int,
                           max_periods: int = 20,
@@ -328,8 +329,17 @@ def build_chart_data_fast(raw_df: pd.DataFrame, dpd_threshold: int,
                           smooth: bool = True,
                           force_monotone: bool = True,
                           cure_adjusted: bool = False,
+                          weight_by: str = "frequency",
                           exclude_indices: Optional[set] = None,
                           prog: Optional[Callable[[str], None]] = None) -> tuple[pd.DataFrame, dict]:
+    """Build vintage curve data.
+
+    weight_by: "frequency" – each loan counts as 1 (count-based default rate)
+               "volume"    – each loan weighted by its origination amount
+    Returns (wide DataFrame, cohort_sizes dict).
+    """
+    volume_mode = weight_by.lower() == "volume"
+
     if prog: prog("Preparing base dataset …")
     base = prepare_base_cached(raw_df)
 
@@ -353,28 +363,54 @@ def build_chart_data_fast(raw_df: pd.DataFrame, dpd_threshold: int,
         is_def = _cum_or_by_group(codes, flags)
 
     if prog: prog(f"Aggregating cohorts ({period_col}) …")
-    agg = (pd.DataFrame({
-                'Vintage': base['Vintage'].to_numpy(),
-                period_col: base[period_col].to_numpy(),
-                'is_def': is_def,
-                'LoanID': base['Loan ID'].to_numpy()
-           })
-           .groupby(['Vintage', period_col], sort=False)
-           .agg(total_loans=('LoanID', 'nunique'),
-                total_default=('is_def', 'sum'))
-           .reset_index())
 
-    if agg.empty:
-        if prog: prog("No data to plot.")
-        return pd.DataFrame(), {}
+    # Build row-level frame for aggregation
+    row_df = pd.DataFrame({
+        'Vintage': base['Vintage'].to_numpy(),
+        period_col: base[period_col].to_numpy(),
+        'is_def': is_def,
+        'LoanID': base['Loan ID'].to_numpy(),
+    })
+    if volume_mode:
+        row_df['orig_amt'] = base['Origination amount'].to_numpy(dtype='float32')
+        # Drop rows with unusable origination amounts (NaN / zero / negative)
+        valid_amt = row_df['orig_amt'].gt(0) & row_df['orig_amt'].notna()
+        row_df = row_df.loc[valid_amt]
 
-    agg[period_col] = pd.to_numeric(agg[period_col], errors='coerce').astype('int16')
-    agg['default_rate'] = (agg['total_default'] / agg['total_loans']).astype('float32')
+    # Deduplicate to one row per loan per vintage+period (keep last snapshot
+    # in the period so the default flag reflects the end-of-period status).
+    # This prevents double-counting when multiple monthly snapshots fall in
+    # the same QOB, which would inflate volume sums.
+    row_df = row_df.drop_duplicates(subset=['Vintage', period_col, 'LoanID'], keep='last')
+
+    if volume_mode:
+        # Weighted default amount = orig_amt where loan is in default, else 0
+        row_df['def_amt'] = row_df['orig_amt'] * row_df['is_def']
+        agg = (row_df
+               .groupby(['Vintage', period_col], sort=False)
+               .agg(total_vol=('orig_amt', 'sum'),
+                    default_vol=('def_amt', 'sum'))
+               .reset_index())
+        if agg.empty:
+            if prog: prog("No data to plot.")
+            return pd.DataFrame(), {}
+        agg[period_col] = pd.to_numeric(agg[period_col], errors='coerce').astype('int16')
+        agg['default_rate'] = (agg['default_vol'] / agg['total_vol']).astype('float32')
+        cohort_sizes = (agg.groupby('Vintage')['total_vol'].max().to_dict())
+    else:
+        agg = (row_df
+               .groupby(['Vintage', period_col], sort=False)
+               .agg(total_loans=('LoanID', 'nunique'),
+                    total_default=('is_def', 'sum'))
+               .reset_index())
+        if agg.empty:
+            if prog: prog("No data to plot.")
+            return pd.DataFrame(), {}
+        agg[period_col] = pd.to_numeric(agg[period_col], errors='coerce').astype('int16')
+        agg['default_rate'] = (agg['total_default'] / agg['total_loans']).astype('float32')
+        cohort_sizes = (agg.groupby('Vintage')['total_loans'].max().to_dict())
+
     max_p = min(int(agg[period_col].max()), max_periods)
-
-    # Cohort sizes for legend labels
-    cohort_sizes = (agg.groupby('Vintage')['total_loans'].max()
-                       .to_dict())
 
     wide = (agg.pivot(index=period_col, columns='Vintage', values='default_rate')
                .sort_index()
@@ -398,7 +434,8 @@ def plot_curves_percent_with_months(df_wide: pd.DataFrame,
                                     palette: str = "Gradient",
                                     base_color: Optional[str] = None,
                                     line_width: int = 1,
-                                    cohort_sizes: Optional[dict] = None):
+                                    cohort_sizes: Optional[dict] = None,
+                                    volume_mode: bool = False):
     if df_wide.empty:
         st.info('Not enough data to plot.')
         return None
@@ -447,7 +484,11 @@ def plot_curves_percent_with_months(df_wide: pd.DataFrame,
     for i, col in enumerate(df_wide.columns):
         label = str(col)
         if cohort_sizes and col in cohort_sizes:
-            label = f"{col} (n={int(cohort_sizes[col]):,})"
+            sz = cohort_sizes[col]
+            if volume_mode:
+                label = f"{col} (${sz:,.0f})"
+            else:
+                label = f"{col} (n={int(sz):,})"
         fig.add_trace(go.Scatter(
             x=x_months,
             y=Y[:, i],
@@ -594,6 +635,25 @@ def run_integrity_checks(df: pd.DataFrame, dpd_threshold: int, gap_days: int = 1
     summary['Current amount > Origination amount'] = int(curr_gt_orig.sum())
     track(curr_gt_orig, 'Current > Origination')
 
+    # Volume-weighting readiness
+    unique_loans = dfn.drop_duplicates(subset='Loan ID')
+    total_unique = len(unique_loans)
+    amt_nan = unique_loans['Origination amount'].isna()
+    amt_nonpos = unique_loans['Origination amount'].le(0) & unique_loans['Origination amount'].notna()
+    unusable = amt_nan | amt_nonpos
+    n_unusable = int(unusable.sum())
+    summary['Loans with unusable origination amount (for volume)'] = n_unusable
+    if total_unique > 0:
+        summary['% loans excluded in volume mode'] = round(100 * n_unusable / total_unique, 2)
+    usable_vol = unique_loans.loc[~unusable, 'Origination amount']
+    if not usable_vol.empty:
+        summary['Total origination volume (usable)'] = float(usable_vol.sum())
+        summary['Origination amount range'] = f"{usable_vol.min():,.0f} – {usable_vol.max():,.0f}"
+        p99 = usable_vol.quantile(0.99)
+        p1 = usable_vol.quantile(0.01)
+        if p1 > 0:
+            summary['Origination amount concentration (p99/p1)'] = round(float(p99 / p1), 1)
+
     # Consistency + QOB aggregation sanity
     dfd = add_vintage_mob(dfn).sort_values(['Loan ID','Observation date'])
     dfd['is_def'] = (dfd['Days past due'] >= dpd_threshold).astype(np.uint8)
@@ -703,7 +763,12 @@ CHECK_DESCRIPTIONS = {
     'Years (Origination)': 'Distinct origination years present.',
     'Years (Observation)': 'Distinct observation years present.',
     'Years (Maturity)': 'Distinct maturity years present.',
-    'Vintages observed': 'Vintages represented after processing.'
+    'Vintages observed': 'Vintages represented after processing.',
+    'Loans with unusable origination amount (for volume)': 'Loans with NaN, zero, or negative origination amount excluded from volume-weighted analysis.',
+    '% loans excluded in volume mode': 'Percentage of unique loans dropped from volume-weighted calculations.',
+    'Total origination volume (usable)': 'Sum of origination amounts for loans with valid amounts.',
+    'Origination amount range': 'Min and max origination amounts across usable loans.',
+    'Origination amount concentration (p99/p1)': 'Ratio of 99th to 1st percentile origination amount. High values mean a few large loans dominate volume-weighted results.',
 }
 
 def explain_check(name: str) -> str:
@@ -773,11 +838,13 @@ def compute_vintage_default_summary(raw_df: pd.DataFrame, dpd_threshold: int) ->
     first_obs = g['Observation date'].min()
     last_obs  = g['Observation date'].max()
     first_vintage = g['Vintage'].first()
+    first_orig_amt = g['Origination amount'].first()
     first_def_date = (dfn.loc[dfn['__def']]
                         .groupby('Loan ID', sort=False)['Observation date']
                         .min())
 
     loan_df = pd.DataFrame({'Vintage': first_vintage, 'first_obs': first_obs, 'last_obs': last_obs})
+    loan_df['orig_amt'] = first_orig_amt
     loan_df['def_date']  = first_def_date
     loan_df['defaulted'] = loan_df['def_date'].notna()
     loan_df['obs_end']   = loan_df['def_date'].fillna(loan_df['last_obs'])
@@ -786,6 +853,7 @@ def compute_vintage_default_summary(raw_df: pd.DataFrame, dpd_threshold: int) ->
     loan_df['Obs_Time_years'] = (obs_days / 365.25).astype('float32')
     loan_df.loc[loan_df['Obs_Time_years'] <= 0, 'Obs_Time_years'] = np.nan
 
+    # ---- Frequency-weighted (count-based) ----
     out = (loan_df.groupby('Vintage', as_index=False)
            .agg(Unique_loans=('Vintage','size'),
                 Defaulted_loans=('defaulted','sum'),
@@ -794,6 +862,26 @@ def compute_vintage_default_summary(raw_df: pd.DataFrame, dpd_threshold: int) ->
     m = out['Observation_Time'] > 0
     out['Default_rate_pa'] = np.nan
     out.loc[m, 'Default_rate_pa'] = 1 - np.power(1 - out.loc[m, 'Cum_PD'], 1 / out.loc[m, 'Observation_Time'])
+
+    # ---- Volume-weighted (origination amount) ----
+    # Only include loans with valid (positive, non-NaN) origination amounts
+    vol = loan_df[loan_df['orig_amt'].gt(0) & loan_df['orig_amt'].notna()].copy()
+    vol['def_amt'] = vol['orig_amt'].where(vol['defaulted'], 0.0)
+
+    vol_agg = (vol.groupby('Vintage', as_index=False)
+               .agg(Total_volume=('orig_amt', 'sum'),
+                    Default_volume=('def_amt', 'sum'),
+                    Vol_obs_time=('Obs_Time_years', 'median'),
+                    Vol_loans_used=('Vintage', 'size')))
+    vol_agg['Vol_Cum_PD'] = (vol_agg['Default_volume'] / vol_agg['Total_volume']).astype('float32')
+    vm = vol_agg['Vol_obs_time'] > 0
+    vol_agg['Vol_Default_rate_pa'] = np.nan
+    vol_agg.loc[vm, 'Vol_Default_rate_pa'] = (
+        1 - np.power(1 - vol_agg.loc[vm, 'Vol_Cum_PD'], 1 / vol_agg.loc[vm, 'Vol_obs_time']))
+
+    out = out.merge(vol_agg[['Vintage', 'Total_volume', 'Default_volume',
+                              'Vol_Cum_PD', 'Vol_Default_rate_pa', 'Vol_loans_used']],
+                    on='Vintage', how='left')
     return out.sort_values('Vintage').reset_index(drop=True)
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -923,6 +1011,8 @@ with right:
                 disp["Cum PD (%)"] = disp["Cum PD"] * 100
                 disp["Annualized default rate (%)"] = disp["Annualized default rate"] * 100
 
+                # ---- Frequency-based table ----
+                st.markdown("**Frequency-based (count)**")
                 table = disp[[
                     "Vintage",
                     "Unique loans",
@@ -944,8 +1034,50 @@ with right:
                     .background_gradient(subset=["Cum PD (%)", "Annualized default rate (%)"], cmap="Reds")
                     .hide(axis="index")
                 )
-
                 st.dataframe(styler, use_container_width=True)
+
+                # ---- Volume-based table ----
+                has_vol = summary_df['Total_volume'].notna().any()
+                if has_vol:
+                    st.markdown("**Volume-based (origination amount)**")
+                    vol_disp = summary_df.rename(columns={
+                        "Total_volume": "Total volume",
+                        "Default_volume": "Default volume",
+                        "Vol_Cum_PD": "Vol Cum PD",
+                        "Vol_Default_rate_pa": "Vol annualized DR",
+                        "Vol_loans_used": "Loans with valid amount",
+                        "Unique_loans": "Unique loans",
+                    })
+                    vol_disp["Vol Cum PD (%)"] = vol_disp["Vol Cum PD"] * 100
+                    vol_disp["Vol annualized DR (%)"] = vol_disp["Vol annualized DR"] * 100
+                    vol_disp["Excluded loans"] = vol_disp["Unique loans"] - vol_disp["Loans with valid amount"]
+
+                    vol_table = vol_disp[[
+                        "Vintage",
+                        "Total volume",
+                        "Default volume",
+                        "Vol Cum PD (%)",
+                        "Vol annualized DR (%)",
+                        "Loans with valid amount",
+                        "Excluded loans",
+                    ]]
+                    vol_styles = {
+                        "Total volume": "{:,.0f}",
+                        "Default volume": "{:,.0f}",
+                        "Vol Cum PD (%)": "{:.2f}",
+                        "Vol annualized DR (%)": "{:.2f}",
+                        "Loans with valid amount": "{:.0f}",
+                        "Excluded loans": "{:.0f}",
+                    }
+                    vol_styler = (
+                        vol_table.style
+                        .format(vol_styles)
+                        .background_gradient(subset=["Vol Cum PD (%)", "Vol annualized DR (%)"], cmap="Reds")
+                        .hide(axis="index")
+                    )
+                    st.dataframe(vol_styler, use_container_width=True)
+                else:
+                    st.info('Volume-based table not available (no valid origination amounts).')
 
                 st.download_button(
                     'Download CSV (vintage default summary)',
@@ -964,6 +1096,13 @@ with right:
 
             with col_settings:
                 st.header('Chart settings')
+                weight_option = st.selectbox(
+                    'Default rate basis',
+                    ['Frequency (count)', 'Volume (origination amount)'],
+                    index=0,
+                    help='Frequency: each loan = 1. Volume: each loan weighted by origination amount.',
+                )
+                wt_key = 'volume' if 'Volume' in weight_option else 'frequency'
                 granularity = st.selectbox('Granularity', ['Quarterly (QOB)', 'Monthly (MOB)'], index=0)
                 gran_key = 'QOB' if 'QOB' in granularity else 'MOB'
                 max_months_show = st.slider('Show curves up to (months)', min_value=12, max_value=180, value=60, step=6)
@@ -1007,6 +1146,7 @@ with right:
                         smooth=smooth_curves,
                         force_monotone=force_monotone,
                         cure_adjusted=cure_adjusted,
+                        weight_by=wt_key,
                         exclude_indices=excl,
                         prog=upd,
                     )
@@ -1024,6 +1164,8 @@ with right:
                             df_plot = df_plot_any[selected_vintages]
                             prog_bar.progress(0.9, text="Rendering chart …")
                             ttl = f'Vintage Default-Rate Evolution | DPD≥{dpd_threshold}'
+                            if wt_key == 'volume':
+                                ttl += ' | volume-weighted'
                             if cure_adjusted:
                                 ttl += ' | cure-adjusted'
                             fig = plot_curves_percent_with_months(
@@ -1035,6 +1177,7 @@ with right:
                                 base_color=base_color,
                                 line_width=line_width,
                                 cohort_sizes=cohort_sizes,
+                                volume_mode=(wt_key == 'volume'),
                             )
                             prog_bar.progress(1.0, text="Done")
 
