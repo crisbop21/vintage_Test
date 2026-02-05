@@ -127,12 +127,13 @@ st.markdown(
         }}
 
         /* ═══════════════════════════════════════════════════════════════════
-           SIDEBAR STYLES
+           SIDEBAR STYLES - Light background with dark text for contrast
            ═══════════════════════════════════════════════════════════════════ */
         [data-testid="stSidebar"] {{
-            background: linear-gradient(180deg, {WB_SECONDARY} 0%, {WB_PRIMARY} 100%);
+            background: {WB_LIGHT};
             padding: 0;
-            box-shadow: var(--shadow-xl);
+            box-shadow: var(--shadow-lg);
+            border-right: 1px solid {WB_BORDER};
         }}
 
         [data-testid="stSidebar"] > div:first-child {{
@@ -140,24 +141,24 @@ st.markdown(
         }}
 
         [data-testid="stSidebar"] * {{
-            color: white !important;
+            color: {WB_TEXT} !important;
         }}
 
         [data-testid="stSidebar"] .stSelectbox *,
         [data-testid="stSidebar"] [data-baseweb="select"] * {{
-            color: var(--text) !important;
+            color: {WB_TEXT} !important;
         }}
 
         [data-testid="stSidebar"] h1,
         [data-testid="stSidebar"] h2,
         [data-testid="stSidebar"] h3 {{
-            color: white !important;
+            color: {WB_PRIMARY} !important;
             font-weight: 600;
             letter-spacing: -0.02em;
         }}
 
         [data-testid="stSidebar"] .stMarkdown p {{
-            color: rgba(255, 255, 255, 0.9) !important;
+            color: {WB_TEXT} !important;
             font-size: 0.9rem;
         }}
 
@@ -165,7 +166,7 @@ st.markdown(
         [data-testid="stSidebar"] hr {{
             border: none;
             height: 1px;
-            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+            background: {WB_BORDER};
             margin: var(--space-3) 0;
         }}
 
@@ -635,22 +636,24 @@ if density_mode == 'Compact':
     )
 
 # ──────────────────────────────────────────────────────────────────────────────
-# CORPORATE HEADER
+# CORPORATE HEADER - Light background with dark text for contrast
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown(
     f"""
     <div style="
-        background: linear-gradient(135deg, {WB_PRIMARY} 0%, {WB_SECONDARY} 100%);
+        background: white;
         padding: 32px 40px;
         border-radius: 16px;
         margin-bottom: 32px;
-        box-shadow: 0 10px 40px -10px rgba(30, 58, 138, 0.3);
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+        border: 1px solid {WB_BORDER};
+        border-left: 5px solid {WB_PRIMARY};
     ">
         <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px;">
             <div>
                 <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 8px;">
                     <div style="
-                        background: rgba(255,255,255,0.15);
+                        background: {WB_PRIMARY};
                         border-radius: 12px;
                         padding: 12px;
                         display: flex;
@@ -662,23 +665,23 @@ st.markdown(
                             <path d="M18.7 8l-5.1 5.2-2.8-2.7L7 14.3"/>
                         </svg>
                     </div>
-                    <h1 style="color: white !important; margin: 0; font-size: 2rem; font-weight: 700; letter-spacing: -0.02em;">
+                    <h1 style="color: {WB_TEXT} !important; margin: 0; font-size: 2rem; font-weight: 700; letter-spacing: -0.02em;">
                         Vintage Default-Rate Analytics
                     </h1>
                 </div>
-                <p style="color: rgba(255,255,255,0.85) !important; margin: 0; font-size: 1rem; max-width: 500px;">
+                <p style="color: {WB_MUTED} !important; margin: 0; font-size: 1rem; max-width: 500px;">
                     Enterprise-grade loan portfolio analysis with integrity validation and performance tracking
                 </p>
             </div>
             <div style="display: flex; gap: 24px;">
                 <div style="text-align: center;">
-                    <div style="color: rgba(255,255,255,0.7); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em;">Platform</div>
-                    <div style="color: white; font-weight: 600; font-size: 1rem;">QOB Analysis</div>
+                    <div style="color: {WB_MUTED}; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em;">Platform</div>
+                    <div style="color: {WB_PRIMARY}; font-weight: 600; font-size: 1rem;">QOB Analysis</div>
                 </div>
-                <div style="width: 1px; background: rgba(255,255,255,0.2);"></div>
+                <div style="width: 1px; background: {WB_BORDER};"></div>
                 <div style="text-align: center;">
-                    <div style="color: rgba(255,255,255,0.7); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em;">Version</div>
-                    <div style="color: white; font-weight: 600; font-size: 1rem;">2.0</div>
+                    <div style="color: {WB_MUTED}; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em;">Version</div>
+                    <div style="color: {WB_PRIMARY}; font-weight: 600; font-size: 1rem;">2.0</div>
                 </div>
             </div>
         </div>
@@ -1282,78 +1285,66 @@ def export_integrity_pdf(summary: dict, dataset_label: str = 'Full dataset') -> 
         fig = plt.figure(figsize=(8.27, 11.69))  # A4 portrait
         plt.axis('off')
 
-        # Corporate header
-        y = 0.96
-        plt.fill_between([0, 1], [y + 0.06, y + 0.06], [y - 0.02, y - 0.02],
-                        color='#1E3A8A', transform=fig.transFigure, figure=fig)
-        plt.text(0.5, y + 0.02, 'DATA INTEGRITY REPORT', ha='center', va='top',
-                fontsize=20, weight='bold', color='white', family='sans-serif')
-        plt.text(0.5, y - 0.015, 'Vintage Default-Rate Analytics Suite', ha='center', va='top',
-                fontsize=10, color='white', alpha=0.9, family='sans-serif')
+        y = 0.95
 
-        y = 0.85
-        # Report metadata
-        plt.text(0.05, y, f'Dataset: {dataset_label}', ha='left', va='top',
-                fontsize=11, color='#1E3A8A', weight='bold')
+        # Title
+        plt.text(0.5, y, 'Data Integrity Report', ha='center', va='top',
+                fontsize=22, weight='bold', color='#1E3A8A')
+        y -= 0.05
+
+        # Subtitle
+        plt.text(0.5, y, 'Vintage Default-Rate Analytics', ha='center', va='top',
+                fontsize=14, color='#64748B')
+        y -= 0.04
+
+        # Dataset info
         import datetime
-        plt.text(0.95, y, f'Generated: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M")}',
-                ha='right', va='top', fontsize=9, color='#64748B')
-        y -= 0.04
+        plt.text(0.5, y, f'Dataset: {dataset_label}  |  Generated: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M")}',
+                ha='center', va='top', fontsize=11, color='#002244')
+        y -= 0.06
 
-        # Divider
-        plt.plot([0.05, 0.95], [y, y], color='#E2E8F0', linewidth=1,
-                transform=fig.transFigure, figure=fig)
-        y -= 0.03
+        # Summary section header
+        plt.text(0.05, y, 'Analysis Summary', ha='left', va='top',
+                fontsize=16, weight='bold', color='#002244')
+        y -= 0.05
 
-        # Summary section
-        plt.text(0.05, y, 'ANALYSIS SUMMARY', ha='left', va='top',
-                fontsize=12, weight='bold', color='#002244')
-        y -= 0.04
-
+        # Build summary bullets
         bullets = []
         explanations = []
         for k, v in summary.items():
             if isinstance(v, list):
-                v = ', '.join(map(str, v[:12])) + (' …' if len(v) > 12 else '')
-            bullets.append(f'• {k}: {v}')
+                v = ', '.join(map(str, v[:10])) + (' ...' if len(v) > 10 else '')
+            bullets.append(f'  {k}: {v}')
             desc = explain_check(k)
             if desc:
-                explanations.append(f'• {k}: {desc}')
+                explanations.append(f'  {k}: {desc}')
 
+        # Print summary items with larger font
         wrapped = []
         for line in bullets:
-            wrapped.extend(textwrap.wrap(line, width=95))
+            wrapped.extend(textwrap.wrap(line, width=80))
         for line in wrapped:
-            plt.text(0.07, y, line, ha='left', va='top', fontsize=9, color='#002244')
-            y -= 0.025
-            if y < 0.35:
+            plt.text(0.05, y, line, ha='left', va='top', fontsize=11, color='#002244')
+            y -= 0.028
+            if y < 0.38:
                 break
 
-        y -= 0.02
-        # Divider
-        plt.plot([0.05, 0.95], [y, y], color='#E2E8F0', linewidth=1,
-                transform=fig.transFigure, figure=fig)
         y -= 0.03
 
-        # Explanations section
-        plt.text(0.05, y, 'CHECK DEFINITIONS', ha='left', va='top',
-                fontsize=12, weight='bold', color='#002244')
-        y -= 0.04
+        # Explanations section header
+        plt.text(0.05, y, 'Check Definitions', ha='left', va='top',
+                fontsize=16, weight='bold', color='#002244')
+        y -= 0.05
 
+        # Print explanations with readable font
         wrapped_desc = []
         for line in explanations:
-            wrapped_desc.extend(textwrap.wrap(line, width=95))
+            wrapped_desc.extend(textwrap.wrap(line, width=85))
         for line in wrapped_desc:
-            plt.text(0.07, y, line, ha='left', va='top', fontsize=8, color='#1E3A8A')
-            y -= 0.022
+            plt.text(0.05, y, line, ha='left', va='top', fontsize=10, color='#1E3A8A')
+            y -= 0.025
             if y < 0.05:
                 break
-
-        # Footer
-        plt.fill_between([0, 1], [0.02, 0.02], [0, 0],
-                        color='#F8FAFC', transform=fig.transFigure, figure=fig)
-        plt.text(0.5, 0.01, 'Vintage Default-Rate Analytics | Confidential',
-                ha='center', va='bottom', fontsize=8, color='#64748B')
 
         pdf.savefig(fig, bbox_inches='tight')
         plt.close(fig)
@@ -1407,17 +1398,17 @@ def compute_vintage_default_summary(raw_df: pd.DataFrame, dpd_threshold: int) ->
 # UI - SIDEBAR
 # ──────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
-    # Sidebar branding
+    # Sidebar branding - light background with dark text
     st.markdown(
         f"""
         <div style="
             text-align: center;
             padding: 16px 0 24px 0;
-            border-bottom: 1px solid rgba(255,255,255,0.15);
+            border-bottom: 1px solid {WB_BORDER};
             margin-bottom: 24px;
         ">
             <div style="
-                background: rgba(255,255,255,0.1);
+                background: {WB_PRIMARY};
                 width: 56px;
                 height: 56px;
                 border-radius: 14px;
@@ -1432,8 +1423,8 @@ with st.sidebar:
                     <path d="M2 12l10 5 10-5"/>
                 </svg>
             </div>
-            <h3 style="margin: 0; font-size: 1.1rem; font-weight: 600;">Analytics Suite</h3>
-            <p style="margin: 4px 0 0 0; font-size: 0.75rem; opacity: 0.7;">Vintage Curve Analysis</p>
+            <h3 style="margin: 0; font-size: 1.1rem; font-weight: 600; color: {WB_PRIMARY};">Analytics Suite</h3>
+            <p style="margin: 4px 0 0 0; font-size: 0.75rem; color: {WB_MUTED};">Vintage Curve Analysis</p>
         </div>
         """,
         unsafe_allow_html=True
