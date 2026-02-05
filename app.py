@@ -49,96 +49,566 @@ try:
 except Exception:
     NUMBA_OK = False
 
-st.set_page_config(page_title='Vintage Curves (QOB) + Integrity — Ultra-Fast', layout='wide')
+st.set_page_config(
+    page_title='Vintage Default-Rate Analytics | Corporate Dashboard',
+    page_icon='📊',
+    layout='wide',
+    initial_sidebar_state='expanded'
+)
 
-# Density selector allows comfortable or compact spacing modes
-density_mode = st.sidebar.selectbox('Density', ['Comfortable', 'Compact'], index=0)
+# ──────────────────────────────────────────────────────────────────────────────
+# Corporate Color Palette (keeping user's colors)
+# ──────────────────────────────────────────────────────────────────────────────
+WB_PRIMARY = "#1E3A8A"       # Primary blue - buttons, accents
+WB_SECONDARY = "#1E40AF"     # Secondary blue - sidebar
+WB_BG = "#FFFFFF"            # Background white
+WB_TEXT = "#002244"          # Text color
+WB_LIGHT = "#F8FAFC"         # Light background for cards
+WB_BORDER = "#E2E8F0"        # Subtle border color
+WB_ACCENT = "#3B82F6"        # Lighter accent blue
+WB_SUCCESS = "#10B981"       # Success green
+WB_MUTED = "#64748B"         # Muted text
 
-# Blue palette with white background
-# Darker blues for sidebar and accents
-WB_PRIMARY = "#1E3A8A"      # Button and link color
-WB_SECONDARY = "#1E40AF"    # Sidebar background
-WB_BG = "#FFFFFF"           # Page background
-WB_TEXT = "#002244"         # General text color
+# Density selector in sidebar
+density_mode = st.sidebar.selectbox('Display Density', ['Comfortable', 'Compact'], index=0)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Corporate CSS Styling
+# ──────────────────────────────────────────────────────────────────────────────
 st.markdown(
     f"""
     <style>
+        /* ═══════════════════════════════════════════════════════════════════
+           CSS VARIABLES & BASE STYLES
+           ═══════════════════════════════════════════════════════════════════ */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
         :root {{
+            --primary: {WB_PRIMARY};
+            --secondary: {WB_SECONDARY};
+            --bg: {WB_BG};
+            --text: {WB_TEXT};
+            --light: {WB_LIGHT};
+            --border: {WB_BORDER};
+            --accent: {WB_ACCENT};
+            --success: {WB_SUCCESS};
+            --muted: {WB_MUTED};
             --space-1: 8px;
             --space-2: 16px;
             --space-3: 24px;
             --space-4: 32px;
             --space-5: 48px;
+            --radius-sm: 6px;
+            --radius-md: 10px;
+            --radius-lg: 16px;
+            --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+            --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+            --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+            --transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
         }}
+
+        /* ═══════════════════════════════════════════════════════════════════
+           GLOBAL STYLES
+           ═══════════════════════════════════════════════════════════════════ */
         html, body, [data-testid="stAppViewContainer"], .stApp {{
-            background-color: {WB_BG};
-            line-height: 1.5;
+            background: linear-gradient(135deg, {WB_BG} 0%, {WB_LIGHT} 100%);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            line-height: 1.6;
+            -webkit-font-smoothing: antialiased;
         }}
+
         [data-testid="stAppViewContainer"] {{
-            padding: var(--space-3);
+            padding: var(--space-4);
         }}
+
         *, *::placeholder {{
-            color: {WB_TEXT} !important;
+            color: var(--text) !important;
         }}
-       [data-testid="stSidebar"] {{
-            background-color: {WB_SECONDARY};
+
+        /* ═══════════════════════════════════════════════════════════════════
+           SIDEBAR STYLES
+           ═══════════════════════════════════════════════════════════════════ */
+        [data-testid="stSidebar"] {{
+            background: linear-gradient(180deg, {WB_SECONDARY} 0%, {WB_PRIMARY} 100%);
+            padding: 0;
+            box-shadow: var(--shadow-xl);
+        }}
+
+        [data-testid="stSidebar"] > div:first-child {{
             padding: var(--space-3);
         }}
+
         [data-testid="stSidebar"] * {{
             color: white !important;
         }}
-        [data-testid="stSidebar"] .stSelectbox * {{
-            color: black !important;
+
+        [data-testid="stSidebar"] .stSelectbox *,
+        [data-testid="stSidebar"] [data-baseweb="select"] * {{
+            color: var(--text) !important;
         }}
-        .block-container {{
-            padding-top: var(--space-4);
-            padding-bottom: var(--space-4);
-        }}
-        .stButton>button {{
-            background-color: {WB_PRIMARY};
-            margin-top: var(--space-2);
-            margin-bottom: var(--space-2);
-            padding: var(--space-1) var(--space-2);
-            border: none;
-        }}
-        .stButton>button, .stButton>button * {{
+
+        [data-testid="stSidebar"] h1,
+        [data-testid="stSidebar"] h2,
+        [data-testid="stSidebar"] h3 {{
             color: white !important;
+            font-weight: 600;
+            letter-spacing: -0.02em;
         }}
-        .stButton>button:hover {{
-            filter: brightness(1.1);
+
+        [data-testid="stSidebar"] .stMarkdown p {{
+            color: rgba(255, 255, 255, 0.9) !important;
+            font-size: 0.9rem;
         }}
-        .stButton>button:active {{
-            filter: brightness(0.9);
+
+        /* Sidebar divider */
+        [data-testid="stSidebar"] hr {{
+            border: none;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+            margin: var(--space-3) 0;
         }}
-        .stButton>button:focus {{
-            outline: 3px solid white;
+
+        /* ═══════════════════════════════════════════════════════════════════
+           MAIN CONTENT AREA
+           ═══════════════════════════════════════════════════════════════════ */
+        .block-container {{
+            padding: var(--space-4) var(--space-5);
+            max-width: 1400px;
+        }}
+
+        /* ═══════════════════════════════════════════════════════════════════
+           HEADERS & TYPOGRAPHY
+           ═══════════════════════════════════════════════════════════════════ */
+        h1 {{
+            font-weight: 700;
+            letter-spacing: -0.03em;
+            color: var(--text) !important;
+        }}
+
+        h2 {{
+            font-weight: 600;
+            letter-spacing: -0.02em;
+            color: var(--text) !important;
+            border-bottom: 2px solid var(--border);
+            padding-bottom: var(--space-2);
+            margin-bottom: var(--space-3);
+        }}
+
+        h3 {{
+            font-weight: 600;
+            color: var(--primary) !important;
+            letter-spacing: -0.01em;
+        }}
+
+        p {{
+            max-width: 75ch;
+            color: var(--text);
+        }}
+
+        /* ═══════════════════════════════════════════════════════════════════
+           BUTTONS
+           ═══════════════════════════════════════════════════════════════════ */
+        .stButton > button {{
+            background: linear-gradient(135deg, {WB_PRIMARY} 0%, {WB_SECONDARY} 100%);
+            color: white !important;
+            border: none;
+            border-radius: var(--radius-md);
+            padding: 12px 24px;
+            font-weight: 600;
+            font-size: 0.9rem;
+            letter-spacing: 0.02em;
+            text-transform: uppercase;
+            box-shadow: var(--shadow-md);
+            transition: var(--transition);
+            margin: var(--space-2) 0;
+        }}
+
+        .stButton > button:hover {{
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-lg);
+            filter: brightness(1.05);
+        }}
+
+        .stButton > button:active {{
+            transform: translateY(0);
+            box-shadow: var(--shadow-sm);
+        }}
+
+        .stButton > button:focus {{
+            outline: 3px solid {WB_ACCENT};
             outline-offset: 2px;
         }}
-        a {{
-            color: {WB_PRIMARY} !important;
-        }}
-         p {{
-            max-width: 75ch;
-        }}
-        [data-baseweb="tag"] {{
-            background-color: {WB_PRIMARY};
+
+        .stButton > button, .stButton > button * {{
             color: white !important;
         }}
-         p {{
-            max-width: 75ch;
+
+        /* Secondary/Download buttons */
+        .stDownloadButton > button {{
+            background: var(--light);
+            color: var(--primary) !important;
+            border: 2px solid var(--border);
+            border-radius: var(--radius-md);
+            padding: 10px 20px;
+            font-weight: 500;
+            transition: var(--transition);
         }}
-        input[type="checkbox"], input[type="radio"], input[type="range"] {{
-            accent-color: {WB_PRIMARY};
+
+        .stDownloadButton > button:hover {{
+            background: var(--primary);
+            color: white !important;
+            border-color: var(--primary);
         }}
+
+        .stDownloadButton > button * {{
+            transition: var(--transition);
+        }}
+
+        .stDownloadButton > button:hover * {{
+            color: white !important;
+        }}
+
+        /* ═══════════════════════════════════════════════════════════════════
+           FORM ELEMENTS
+           ═══════════════════════════════════════════════════════════════════ */
+        /* Text inputs */
+        .stTextInput > div > div > input,
+        .stNumberInput > div > div > input {{
+            border: 2px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 10px 14px;
+            font-size: 0.95rem;
+            transition: var(--transition);
+            background: white;
+        }}
+
+        .stTextInput > div > div > input:focus,
+        .stNumberInput > div > div > input:focus {{
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(30, 58, 138, 0.1);
+        }}
+
+        /* Select boxes */
+        [data-baseweb="select"] {{
+            border-radius: var(--radius-sm) !important;
+        }}
+
+        [data-baseweb="select"] > div {{
+            border: 2px solid var(--border) !important;
+            border-radius: var(--radius-sm) !important;
+            background: white !important;
+            transition: var(--transition);
+        }}
+
+        [data-baseweb="select"] > div:hover {{
+            border-color: var(--primary) !important;
+        }}
+
+        /* Checkboxes and radios */
+        input[type="checkbox"], input[type="radio"] {{
+            accent-color: var(--primary);
+            width: 18px;
+            height: 18px;
+        }}
+
+        input[type="range"] {{
+            accent-color: var(--primary);
+        }}
+
+        /* File uploader */
+        [data-testid="stFileUploader"] {{
+            border: 2px dashed var(--border);
+            border-radius: var(--radius-lg);
+            padding: var(--space-3);
+            background: var(--light);
+            transition: var(--transition);
+        }}
+
+        [data-testid="stFileUploader"]:hover {{
+            border-color: var(--primary);
+            background: white;
+        }}
+
+        /* ═══════════════════════════════════════════════════════════════════
+           TABS
+           ═══════════════════════════════════════════════════════════════════ */
+        .stTabs [data-baseweb="tab-list"] {{
+            background: var(--light);
+            border-radius: var(--radius-lg);
+            padding: 6px;
+            gap: 8px;
+        }}
+
+        .stTabs [data-baseweb="tab"] {{
+            background: transparent;
+            border-radius: var(--radius-md);
+            padding: 12px 24px;
+            font-weight: 500;
+            color: var(--muted) !important;
+            transition: var(--transition);
+        }}
+
+        .stTabs [data-baseweb="tab"]:hover {{
+            background: white;
+            color: var(--text) !important;
+        }}
+
+        .stTabs [aria-selected="true"] {{
+            background: white !important;
+            color: var(--primary) !important;
+            box-shadow: var(--shadow-sm);
+        }}
+
+        .stTabs [data-baseweb="tab-highlight"] {{
+            display: none;
+        }}
+
+        .stTabs [data-baseweb="tab-border"] {{
+            display: none;
+        }}
+
+        /* ═══════════════════════════════════════════════════════════════════
+           DATA TABLES
+           ═══════════════════════════════════════════════════════════════════ */
+        [data-testid="stDataFrame"] {{
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            overflow: hidden;
+            box-shadow: var(--shadow-sm);
+        }}
+
+        [data-testid="stDataFrame"] table {{
+            font-size: 0.9rem;
+        }}
+
+        [data-testid="stDataFrame"] th {{
+            background: var(--light) !important;
+            color: var(--text) !important;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.8rem;
+            letter-spacing: 0.05em;
+            padding: 14px 16px !important;
+        }}
+
+        [data-testid="stDataFrame"] td {{
+            padding: 12px 16px !important;
+            border-bottom: 1px solid var(--border);
+        }}
+
+        [data-testid="stDataFrame"] tr:hover td {{
+            background: var(--light) !important;
+        }}
+
+        /* ═══════════════════════════════════════════════════════════════════
+           CARDS & CONTAINERS
+           ═══════════════════════════════════════════════════════════════════ */
+        [data-testid="stExpander"] {{
+            background: white;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow-sm);
+            overflow: hidden;
+        }}
+
+        [data-testid="stExpander"] summary {{
+            font-weight: 600;
+            padding: var(--space-2) var(--space-3);
+        }}
+
+        /* Status container */
+        [data-testid="stStatusWidget"] {{
+            background: white;
+            border-radius: var(--radius-md);
+            box-shadow: var(--shadow-md);
+        }}
+
+        /* ═══════════════════════════════════════════════════════════════════
+           ALERTS & MESSAGES
+           ═══════════════════════════════════════════════════════════════════ */
+        .stAlert {{
+            border-radius: var(--radius-md);
+            border: none;
+            box-shadow: var(--shadow-sm);
+        }}
+
+        [data-testid="stAlert"] {{
+            padding: var(--space-2) var(--space-3);
+        }}
+
+        /* Success message */
+        .stSuccess {{
+            background: linear-gradient(135deg, #ECFDF5 0%, #D1FAE5 100%);
+            border-left: 4px solid {WB_SUCCESS};
+        }}
+
+        /* Info message */
+        .stInfo {{
+            background: linear-gradient(135deg, #EFF6FF 0%, #DBEAFE 100%);
+            border-left: 4px solid var(--primary);
+        }}
+
+        /* Warning message */
+        .stWarning {{
+            background: linear-gradient(135deg, #FFFBEB 0%, #FEF3C7 100%);
+            border-left: 4px solid #F59E0B;
+        }}
+
+        /* Error message */
+        .stError {{
+            background: linear-gradient(135deg, #FEF2F2 0%, #FEE2E2 100%);
+            border-left: 4px solid #EF4444;
+        }}
+
+        /* ═══════════════════════════════════════════════════════════════════
+           TAGS & BADGES
+           ═══════════════════════════════════════════════════════════════════ */
         [data-baseweb="tag"] {{
-            background-color: {WB_PRIMARY};
+            background: linear-gradient(135deg, {WB_PRIMARY} 0%, {WB_SECONDARY} 100%);
+            border-radius: var(--radius-sm);
+            font-weight: 500;
+            padding: 4px 12px;
         }}
+
         [data-baseweb="tag"], [data-baseweb="tag"] * {{
             color: white !important;
         }}
+
         [data-baseweb="tag"] [data-baseweb="close"] svg {{
             fill: white !important;
         }}
+
+        /* ═══════════════════════════════════════════════════════════════════
+           LINKS
+           ═══════════════════════════════════════════════════════════════════ */
+        a {{
+            color: var(--primary) !important;
+            text-decoration: none;
+            font-weight: 500;
+            transition: var(--transition);
+        }}
+
+        a:hover {{
+            color: var(--accent) !important;
+            text-decoration: underline;
+        }}
+
+        /* ═══════════════════════════════════════════════════════════════════
+           DIVIDERS
+           ═══════════════════════════════════════════════════════════════════ */
+        hr {{
+            border: none;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, var(--border), transparent);
+            margin: var(--space-4) 0;
+        }}
+
+        /* ═══════════════════════════════════════════════════════════════════
+           PROGRESS BAR
+           ═══════════════════════════════════════════════════════════════════ */
+        .stProgress > div > div > div {{
+            background: linear-gradient(90deg, {WB_PRIMARY} 0%, {WB_ACCENT} 100%);
+            border-radius: var(--radius-sm);
+        }}
+
+        .stProgress > div > div {{
+            background: var(--light);
+            border-radius: var(--radius-sm);
+        }}
+
+        /* ═══════════════════════════════════════════════════════════════════
+           METRIC CARDS
+           ═══════════════════════════════════════════════════════════════════ */
+        [data-testid="stMetric"] {{
+            background: white;
+            padding: var(--space-3);
+            border-radius: var(--radius-lg);
+            border: 1px solid var(--border);
+            box-shadow: var(--shadow-sm);
+        }}
+
+        [data-testid="stMetric"] label {{
+            color: var(--muted) !important;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }}
+
+        [data-testid="stMetric"] [data-testid="stMetricValue"] {{
+            color: var(--text) !important;
+            font-weight: 700;
+            font-size: 1.8rem;
+        }}
+
+        /* ═══════════════════════════════════════════════════════════════════
+           PLOTLY CHARTS
+           ═══════════════════════════════════════════════════════════════════ */
+        [data-testid="stPlotlyChart"] {{
+            background: white;
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow-md);
+            padding: var(--space-2);
+            border: 1px solid var(--border);
+        }}
+
+        /* ═══════════════════════════════════════════════════════════════════
+           JSON DISPLAY
+           ═══════════════════════════════════════════════════════════════════ */
+        [data-testid="stJson"] {{
+            background: var(--light);
+            border-radius: var(--radius-md);
+            padding: var(--space-2);
+            border: 1px solid var(--border);
+        }}
+
+        /* ═══════════════════════════════════════════════════════════════════
+           CAPTION TEXT
+           ═══════════════════════════════════════════════════════════════════ */
+        .stCaption {{
+            color: var(--muted) !important;
+            font-size: 0.85rem;
+        }}
+
+        /* ═══════════════════════════════════════════════════════════════════
+           MULTISELECT
+           ═══════════════════════════════════════════════════════════════════ */
+        [data-baseweb="multi-select"] {{
+            border-radius: var(--radius-sm);
+        }}
+
+        [data-baseweb="multi-select"] > div {{
+            border: 2px solid var(--border) !important;
+            border-radius: var(--radius-sm) !important;
+            min-height: 42px;
+        }}
+
+        [data-baseweb="multi-select"] > div:hover {{
+            border-color: var(--primary) !important;
+        }}
+
+        /* ═══════════════════════════════════════════════════════════════════
+           SLIDER
+           ═══════════════════════════════════════════════════════════════════ */
+        [data-testid="stSlider"] [data-baseweb="slider"] > div > div {{
+            background: var(--light) !important;
+        }}
+
+        [data-testid="stSlider"] [role="slider"] {{
+            background: var(--primary) !important;
+            border: 3px solid white !important;
+            box-shadow: var(--shadow-md);
+        }}
+
+        /* ═══════════════════════════════════════════════════════════════════
+           COLOR PICKER
+           ═══════════════════════════════════════════════════════════════════ */
+        [data-testid="stColorPicker"] > div {{
+            border-radius: var(--radius-sm);
+            overflow: hidden;
+            box-shadow: var(--shadow-sm);
+        }}
+
     </style>
     """,
     unsafe_allow_html=True,
@@ -152,17 +622,70 @@ if density_mode == 'Compact':
             [data-testid="stAppViewContainer"] {
                 padding: var(--space-2);
             }
-            .stButton>button {
-                padding: var(--space-1);
-                margin-top: var(--space-1);
-                margin-bottom: var(--space-1);
+            .stButton > button {
+                padding: 8px 16px;
+                margin: var(--space-1) 0;
+            }
+            .block-container {
+                padding: var(--space-2) var(--space-3);
             }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
-st.markdown("<h1 style='text-align: center;'>Vintage Default-Rate Tool</h1>", unsafe_allow_html=True)
+# ──────────────────────────────────────────────────────────────────────────────
+# CORPORATE HEADER
+# ──────────────────────────────────────────────────────────────────────────────
+st.markdown(
+    f"""
+    <div style="
+        background: linear-gradient(135deg, {WB_PRIMARY} 0%, {WB_SECONDARY} 100%);
+        padding: 32px 40px;
+        border-radius: 16px;
+        margin-bottom: 32px;
+        box-shadow: 0 10px 40px -10px rgba(30, 58, 138, 0.3);
+    ">
+        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px;">
+            <div>
+                <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 8px;">
+                    <div style="
+                        background: rgba(255,255,255,0.15);
+                        border-radius: 12px;
+                        padding: 12px;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                    ">
+                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M3 3v18h18"/>
+                            <path d="M18.7 8l-5.1 5.2-2.8-2.7L7 14.3"/>
+                        </svg>
+                    </div>
+                    <h1 style="color: white !important; margin: 0; font-size: 2rem; font-weight: 700; letter-spacing: -0.02em;">
+                        Vintage Default-Rate Analytics
+                    </h1>
+                </div>
+                <p style="color: rgba(255,255,255,0.85) !important; margin: 0; font-size: 1rem; max-width: 500px;">
+                    Enterprise-grade loan portfolio analysis with integrity validation and performance tracking
+                </p>
+            </div>
+            <div style="display: flex; gap: 24px;">
+                <div style="text-align: center;">
+                    <div style="color: rgba(255,255,255,0.7); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em;">Platform</div>
+                    <div style="color: white; font-weight: 600; font-size: 1rem;">QOB Analysis</div>
+                </div>
+                <div style="width: 1px; background: rgba(255,255,255,0.2);"></div>
+                <div style="text-align: center;">
+                    <div style="color: rgba(255,255,255,0.7); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em;">Version</div>
+                    <div style="color: white; font-weight: 600; font-size: 1rem;">2.0</div>
+                </div>
+            </div>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
 
 MAX_MB = 50
 RESERVED_COLS = {
@@ -458,12 +981,45 @@ def plot_curves_percent_with_months(df_wide: pd.DataFrame,
         ))
 
     fig.update_layout(
-        title=title,
-        xaxis_title='Deal Age (months)',
-        yaxis=dict(title='Cumulative default rate', tickformat='.2%'),
+        title=dict(
+            text=title,
+            font=dict(size=18, color='#002244', family='Inter, sans-serif'),
+            x=0.5,
+            xanchor='center'
+        ),
+        xaxis=dict(
+            title=dict(text='Deal Age (months)', font=dict(size=13, color='#64748B')),
+            tickfont=dict(size=11, color='#64748B'),
+            gridcolor='#E2E8F0',
+            linecolor='#E2E8F0',
+            zeroline=False,
+        ),
+        yaxis=dict(
+            title=dict(text='Cumulative Default Rate', font=dict(size=13, color='#64748B')),
+            tickformat='.2%',
+            tickfont=dict(size=11, color='#64748B'),
+            gridcolor='#E2E8F0',
+            linecolor='#E2E8F0',
+            zeroline=False,
+        ),
         hovermode='x unified',
+        hoverlabel=dict(
+            bgcolor='white',
+            bordercolor='#E2E8F0',
+            font=dict(size=12, color='#002244', family='Inter, sans-serif')
+        ),
         showlegend=show_leg,
-        legend=dict(bgcolor="white", font=dict(color="black")),
+        legend=dict(
+            bgcolor='rgba(255,255,255,0.95)',
+            bordercolor='#E2E8F0',
+            borderwidth=1,
+            font=dict(color='#002244', size=11, family='Inter, sans-serif'),
+            title=dict(text='Vintage Cohorts', font=dict(size=12, color='#64748B')),
+        ),
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        margin=dict(l=60, r=30, t=60, b=50),
+        font=dict(family='Inter, sans-serif'),
     )
 
     return fig
@@ -725,9 +1281,35 @@ def export_integrity_pdf(summary: dict, dataset_label: str = 'Full dataset') -> 
     with PdfPages(buf) as pdf:
         fig = plt.figure(figsize=(8.27, 11.69))  # A4 portrait
         plt.axis('off')
-        y = 0.95
-        plt.text(0.5, y, 'Data Integrity Report', ha='center', va='top', fontsize=18, weight='bold'); y -= 0.05
-        plt.text(0.5, y, f'Dataset: {dataset_label}', ha='center', va='top', fontsize=11); y -= 0.05
+
+        # Corporate header
+        y = 0.96
+        plt.fill_between([0, 1], [y + 0.06, y + 0.06], [y - 0.02, y - 0.02],
+                        color='#1E3A8A', transform=fig.transFigure, figure=fig)
+        plt.text(0.5, y + 0.02, 'DATA INTEGRITY REPORT', ha='center', va='top',
+                fontsize=20, weight='bold', color='white', family='sans-serif')
+        plt.text(0.5, y - 0.015, 'Vintage Default-Rate Analytics Suite', ha='center', va='top',
+                fontsize=10, color='white', alpha=0.9, family='sans-serif')
+
+        y = 0.85
+        # Report metadata
+        plt.text(0.05, y, f'Dataset: {dataset_label}', ha='left', va='top',
+                fontsize=11, color='#1E3A8A', weight='bold')
+        import datetime
+        plt.text(0.95, y, f'Generated: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M")}',
+                ha='right', va='top', fontsize=9, color='#64748B')
+        y -= 0.04
+
+        # Divider
+        plt.plot([0.05, 0.95], [y, y], color='#E2E8F0', linewidth=1,
+                transform=fig.transFigure, figure=fig)
+        y -= 0.03
+
+        # Summary section
+        plt.text(0.05, y, 'ANALYSIS SUMMARY', ha='left', va='top',
+                fontsize=12, weight='bold', color='#002244')
+        y -= 0.04
+
         bullets = []
         explanations = []
         for k, v in summary.items():
@@ -737,19 +1319,44 @@ def export_integrity_pdf(summary: dict, dataset_label: str = 'Full dataset') -> 
             desc = explain_check(k)
             if desc:
                 explanations.append(f'• {k}: {desc}')
+
         wrapped = []
         for line in bullets:
-            wrapped.extend(textwrap.wrap(line, width=90))
+            wrapped.extend(textwrap.wrap(line, width=95))
         for line in wrapped:
-            plt.text(0.05, y, line, ha='left', va='top', fontsize=10); y -= 0.03
+            plt.text(0.07, y, line, ha='left', va='top', fontsize=9, color='#002244')
+            y -= 0.025
+            if y < 0.35:
+                break
+
         y -= 0.02
-        plt.text(0.5, y, 'Check explanations', ha='center', va='top', fontsize=12, weight='bold'); y -= 0.04
+        # Divider
+        plt.plot([0.05, 0.95], [y, y], color='#E2E8F0', linewidth=1,
+                transform=fig.transFigure, figure=fig)
+        y -= 0.03
+
+        # Explanations section
+        plt.text(0.05, y, 'CHECK DEFINITIONS', ha='left', va='top',
+                fontsize=12, weight='bold', color='#002244')
+        y -= 0.04
+
         wrapped_desc = []
         for line in explanations:
-            wrapped_desc.extend(textwrap.wrap(line, width=90))
+            wrapped_desc.extend(textwrap.wrap(line, width=95))
         for line in wrapped_desc:
-            plt.text(0.05, y, line, ha='left', va='top', fontsize=8, color='#5B9BD5'); y -= 0.03
-        pdf.savefig(fig, bbox_inches='tight'); plt.close(fig)
+            plt.text(0.07, y, line, ha='left', va='top', fontsize=8, color='#1E3A8A')
+            y -= 0.022
+            if y < 0.05:
+                break
+
+        # Footer
+        plt.fill_between([0, 1], [0.02, 0.02], [0, 0],
+                        color='#F8FAFC', transform=fig.transFigure, figure=fig)
+        plt.text(0.5, 0.01, 'Vintage Default-Rate Analytics | Confidential',
+                ha='center', va='bottom', fontsize=8, color='#64748B')
+
+        pdf.savefig(fig, bbox_inches='tight')
+        plt.close(fig)
     return buf.getvalue()
 
 
@@ -797,30 +1404,159 @@ def compute_vintage_default_summary(raw_df: pd.DataFrame, dpd_threshold: int) ->
     return out.sort_values('Vintage').reset_index(drop=True)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# UI
+# UI - SIDEBAR
 # ──────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.header('Instructions')
+    # Sidebar branding
     st.markdown(
-        "1. Configure settings below.\n"
-        "2. Upload an Excel (.xlsx) file.\n"
-        "3. Click **Load dataset**.\n"
-        "4. Explore the tabs for integrity checks, tables, and charts."
+        f"""
+        <div style="
+            text-align: center;
+            padding: 16px 0 24px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.15);
+            margin-bottom: 24px;
+        ">
+            <div style="
+                background: rgba(255,255,255,0.1);
+                width: 56px;
+                height: 56px;
+                border-radius: 14px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                margin: 0 auto 12px auto;
+            ">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                    <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                    <path d="M2 17l10 5 10-5"/>
+                    <path d="M2 12l10 5 10-5"/>
+                </svg>
+            </div>
+            <h3 style="margin: 0; font-size: 1.1rem; font-weight: 600;">Analytics Suite</h3>
+            <p style="margin: 4px 0 0 0; font-size: 0.75rem; opacity: 0.7;">Vintage Curve Analysis</p>
+        </div>
+        """,
+        unsafe_allow_html=True
     )
 
-left, right = st.columns([0.5, 2], gap="large")
+    # Quick start guide
+    with st.expander("📘 Quick Start Guide", expanded=False):
+        st.markdown(
+            """
+            **Step 1:** Configure your default threshold
+
+            **Step 2:** Upload your Excel file (.xlsx)
+
+            **Step 3:** Select sheet and click Load
+
+            **Step 4:** Explore the analysis tabs
+            """
+        )
+
+    st.markdown("---")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# UI - MAIN CONTENT
+# ──────────────────────────────────────────────────────────────────────────────
+left, right = st.columns([1, 3], gap="large")
 
 with left:
-    st.header('Settings')
-    dpd_threshold = st.number_input('Default if Days past due ≥', min_value=1, max_value=365, value=90, step=1)
-    pretty_ints = st.checkbox(
-        'Thousands separators for integer columns',
-        value=False,
-        help='Shows 12,345 instead of 12345; disables numeric sorting on those two columns.',
+    # Settings Card
+    st.markdown(
+        f"""
+        <div style="
+            background: white;
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+            border: 1px solid {WB_BORDER};
+            margin-bottom: 24px;
+        ">
+            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px;">
+                <div style="
+                    background: linear-gradient(135deg, {WB_PRIMARY} 0%, {WB_SECONDARY} 100%);
+                    width: 40px;
+                    height: 40px;
+                    border-radius: 10px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                ">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"/>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                    </svg>
+                </div>
+                <div>
+                    <h3 style="margin: 0; font-size: 1.1rem; color: {WB_TEXT};">Configuration</h3>
+                    <p style="margin: 0; font-size: 0.8rem; color: {WB_MUTED};">Analysis parameters</p>
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
     )
 
-    st.subheader('Upload Excel')
-    uploaded = st.file_uploader('Upload a .xlsx file', type=['xlsx'], accept_multiple_files=False)
+    dpd_threshold = st.number_input(
+        '🎯 Default Threshold (DPD ≥)',
+        min_value=1,
+        max_value=365,
+        value=90,
+        step=1,
+        help='Loans are considered in default when Days Past Due exceeds this threshold'
+    )
+
+    pretty_ints = st.checkbox(
+        '📊 Format with thousand separators',
+        value=False,
+        help='Display numbers as 12,345 instead of 12345'
+    )
+
+    st.markdown("---")
+
+    # Upload Card
+    st.markdown(
+        f"""
+        <div style="
+            background: white;
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+            border: 1px solid {WB_BORDER};
+            margin-bottom: 16px;
+        ">
+            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
+                <div style="
+                    background: linear-gradient(135deg, {WB_SUCCESS} 0%, #059669 100%);
+                    width: 40px;
+                    height: 40px;
+                    border-radius: 10px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                ">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="17 8 12 3 7 8"/>
+                        <line x1="12" y1="3" x2="12" y2="15"/>
+                    </svg>
+                </div>
+                <div>
+                    <h3 style="margin: 0; font-size: 1.1rem; color: {WB_TEXT};">Data Import</h3>
+                    <p style="margin: 0; font-size: 0.8rem; color: {WB_MUTED};">Upload your Excel file</p>
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    uploaded = st.file_uploader(
+        'Select Excel file',
+        type=['xlsx'],
+        accept_multiple_files=False,
+        help='Upload a .xlsx file containing loan portfolio data'
+    )
 
     # Persist full dataset and flagged row indices
     if 'df_full' not in st.session_state:
@@ -830,48 +1566,159 @@ with left:
 
     if uploaded:
         size_mb = uploaded.size / (1024 * 1024)
-        st.caption(f'File size, {size_mb:,.1f} MB')
+
+        # File info display
+        st.markdown(
+            f"""
+            <div style="
+                background: {WB_LIGHT};
+                border-radius: 10px;
+                padding: 12px 16px;
+                margin: 12px 0;
+                border-left: 4px solid {WB_PRIMARY};
+            ">
+                <div style="font-size: 0.9rem; font-weight: 600; color: {WB_TEXT};">📁 {uploaded.name}</div>
+                <div style="font-size: 0.8rem; color: {WB_MUTED};">Size: {size_mb:,.2f} MB</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
         if size_mb > MAX_MB:
-            st.warning('Large file, consider filtering columns or using CSV.')
+            st.warning('⚠️ Large file detected. Consider filtering columns or using CSV format.')
 
         from openpyxl import load_workbook
         names = load_workbook(filename=BytesIO(uploaded.getvalue()), read_only=True, data_only=True).sheetnames
-        sheet = st.selectbox('Select sheet', options=names, index=0)
-        header_row = st.number_input('Header row [1 means first row]', min_value=1, value=1, step=1)
+        sheet = st.selectbox('📋 Select worksheet', options=names, index=0)
+        header_row = st.number_input('📍 Header row position', min_value=1, value=1, step=1, help='Row 1 = first row')
 
-        if st.button('Load dataset', type='primary'):
-            with st.status('Loading dataset...', expanded=False) as status:
+        if st.button('🚀 Load Dataset', type='primary', use_container_width=True):
+            with st.status('Loading dataset...', expanded=True) as status:
+                st.write("📖 Reading Excel file...")
                 df_full = load_full(uploaded.getvalue(), sheet=sheet, header=header_row - 1)
+                st.write(f"✅ Loaded {len(df_full):,} rows and {len(df_full.columns)} columns")
                 st.session_state['df_full'] = df_full
-                status.update(label='Dataset loaded.', state='complete')
+                status.update(label='✅ Dataset loaded successfully!', state='complete')
 with right:
     if st.session_state['df_full'] is not None:
-        st.divider()
         chosen_df_raw = st.session_state['df_full']
 
-        # Basic segmentation filter
+        # Dataset summary metrics
+        st.markdown(
+            f"""
+            <div style="
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: 16px;
+                margin-bottom: 24px;
+            ">
+                <div style="
+                    background: white;
+                    border-radius: 12px;
+                    padding: 20px;
+                    border: 1px solid {WB_BORDER};
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+                ">
+                    <div style="color: {WB_MUTED}; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Total Rows</div>
+                    <div style="color: {WB_TEXT}; font-size: 1.8rem; font-weight: 700;">{len(chosen_df_raw):,}</div>
+                </div>
+                <div style="
+                    background: white;
+                    border-radius: 12px;
+                    padding: 20px;
+                    border: 1px solid {WB_BORDER};
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+                ">
+                    <div style="color: {WB_MUTED}; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Columns</div>
+                    <div style="color: {WB_TEXT}; font-size: 1.8rem; font-weight: 700;">{len(chosen_df_raw.columns)}</div>
+                </div>
+                <div style="
+                    background: white;
+                    border-radius: 12px;
+                    padding: 20px;
+                    border: 1px solid {WB_BORDER};
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+                ">
+                    <div style="color: {WB_MUTED}; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">DPD Threshold</div>
+                    <div style="color: {WB_PRIMARY}; font-size: 1.8rem; font-weight: 700;">≥{dpd_threshold}</div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        # Segmentation filter with card styling
+        st.markdown(
+            f"""
+            <div style="
+                background: white;
+                border-radius: 12px;
+                padding: 16px 20px;
+                border: 1px solid {WB_BORDER};
+                margin-bottom: 24px;
+            ">
+                <div style="font-size: 0.85rem; font-weight: 600; color: {WB_TEXT}; margin-bottom: 8px;">
+                    🔍 Data Segmentation (Optional)
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
         non_reserved = [c for c in chosen_df_raw.columns
                         if str(c).strip() not in RESERVED_COLS]
-        seg_col = st.selectbox('Filter by column (optional)', ['None'] + non_reserved)
+        seg_col = st.selectbox('Filter by column', ['None'] + non_reserved, label_visibility="collapsed")
         if seg_col != 'None':
             unique_vals = chosen_df_raw[seg_col].dropna().unique().tolist()
-            selected_vals = st.multiselect(f'Values for {seg_col}', unique_vals, default=unique_vals)
+            selected_vals = st.multiselect(f'Select values for {seg_col}', unique_vals, default=unique_vals)
             if selected_vals:
                 chosen_df_raw = chosen_df_raw[chosen_df_raw[seg_col].isin(selected_vals)]
 
-        tab_integrity, tab_tables, tab_charts = st.tabs(["Integrity", "Tables", "Charts"])
+        # Tabs with icons
+        tab_integrity, tab_tables, tab_charts = st.tabs([
+            "🛡️ Data Integrity",
+            "📊 Summary Tables",
+            "📈 Vintage Charts"
+        ])
 
-        # Integrity
+        # ════════════════════════════════════════════════════════════════════
+        # INTEGRITY TAB
+        # ════════════════════════════════════════════════════════════════════
         with tab_integrity:
-            st.subheader('Integrity checks, PDF (summary only) & Excel export')
-            dataset_label = 'Full'
+            st.markdown(
+                f"""
+                <div style="
+                    background: linear-gradient(135deg, {WB_LIGHT} 0%, white 100%);
+                    border-radius: 16px;
+                    padding: 24px;
+                    border: 1px solid {WB_BORDER};
+                    margin-bottom: 24px;
+                ">
+                    <h3 style="margin: 0 0 8px 0; color: {WB_TEXT};">Data Quality Assessment</h3>
+                    <p style="margin: 0; color: {WB_MUTED}; font-size: 0.9rem;">
+                        Run comprehensive integrity checks to identify data quality issues, missing values, and inconsistencies in your loan portfolio data.
+                    </p>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
 
-            if st.button('Run integrity checks and generate outputs'):
-                with st.status('Running checks...', expanded=False):
+            dataset_label = 'Full Dataset'
+
+            col_btn, col_spacer = st.columns([1, 2])
+            with col_btn:
+                run_checks = st.button('🔍 Run Integrity Analysis', type='primary', use_container_width=True)
+
+            if run_checks:
+                with st.status('🔄 Analyzing data quality...', expanded=True) as status:
+                    st.write("Validating data schema...")
+                    st.write("Checking date consistency...")
+                    st.write("Analyzing value ranges...")
                     summary, issues_df, vintage_issues_df = run_integrity_checks(chosen_df_raw, dpd_threshold=dpd_threshold)
+                    status.update(label='✅ Analysis complete!', state='complete')
 
                 if 'fatal' in summary:
-                    st.error(summary['fatal'])
+                    st.error(f"❌ Critical Error: {summary['fatal']}")
                 else:
                     # Store flagged row indices for optional exclusion in curves
                     if issues_df is not None and not issues_df.empty and 'index' in issues_df.columns:
@@ -879,38 +1726,164 @@ with right:
                     else:
                         st.session_state['flagged_indices'] = set()
 
-                    st.success('Checks complete.')
+                    st.success('✅ Integrity checks completed successfully!')
+
+                    # Results summary card
+                    st.markdown(
+                        f"""
+                        <div style="
+                            background: white;
+                            border-radius: 12px;
+                            padding: 20px;
+                            border: 1px solid {WB_BORDER};
+                            margin: 16px 0;
+                        ">
+                            <h4 style="margin: 0 0 16px 0; color: {WB_TEXT};">📋 Analysis Summary</h4>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
                     st.json(summary)
 
-                    pdf_bytes = export_integrity_pdf(summary, dataset_label=dataset_label)
-                    st.download_button('Download integrity report (PDF, summary-only)', pdf_bytes,
-                                       'integrity_report.pdf', 'application/pdf')
+                    # Download buttons in columns
+                    st.markdown("#### 📥 Export Reports")
+                    dl_col1, dl_col2, dl_col3 = st.columns(3)
 
-                    xlsx_bytes = export_issues_excel(issues_df, vintage_issues_df)
-                    st.download_button('Download issues sample (Excel)', xlsx_bytes,
-                                       'integrity_issues_sample.xlsx',
-                                       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+                    with dl_col1:
+                        pdf_bytes = export_integrity_pdf(summary, dataset_label=dataset_label)
+                        st.download_button(
+                            '📄 PDF Report',
+                            pdf_bytes,
+                            'integrity_report.pdf',
+                            'application/pdf',
+                            use_container_width=True
+                        )
 
+                    with dl_col2:
+                        xlsx_bytes = export_issues_excel(issues_df, vintage_issues_df)
+                        st.download_button(
+                            '📊 Excel Issues',
+                            xlsx_bytes,
+                            'integrity_issues_sample.xlsx',
+                            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                            use_container_width=True
+                        )
+
+                    st.markdown("---")
+
+                    # Issues display
                     if issues_df is not None and not issues_df.empty:
-                        st.caption('Row-level issues (sample)')
-                        st.dataframe(issues_df.head(500), use_container_width=True)
+                        st.markdown(f"#### ⚠️ Row-Level Issues ({len(issues_df)} samples)")
+                        st.dataframe(issues_df.head(500), use_container_width=True, height=300)
                     else:
-                        st.info('No row-level issues sampled.')
+                        st.info('✅ No row-level data quality issues detected.')
 
                     if vintage_issues_df is not None and not vintage_issues_df.empty:
-                        st.caption('Vintage/cohort issues')
-                        st.dataframe(vintage_issues_df.head(500), use_container_width=True)
+                        st.markdown(f"#### 📊 Vintage/Cohort Issues ({len(vintage_issues_df)} items)")
+                        st.dataframe(vintage_issues_df.head(500), use_container_width=True, height=300)
                     else:
-                        st.info('No vintage-level issues detected.')
+                        st.info('✅ No vintage-level issues detected.')
 
-            st.divider()
-
-        # ---- Vintage table (explicit formatting) ----
+        # ════════════════════════════════════════════════════════════════════
+        # TABLES TAB
+        # ════════════════════════════════════════════════════════════════════
         with tab_tables:
-            st.subheader('Unique loans & default summary by vintage')
+            st.markdown(
+                f"""
+                <div style="
+                    background: linear-gradient(135deg, {WB_LIGHT} 0%, white 100%);
+                    border-radius: 16px;
+                    padding: 24px;
+                    border: 1px solid {WB_BORDER};
+                    margin-bottom: 24px;
+                ">
+                    <h3 style="margin: 0 0 8px 0; color: {WB_TEXT};">Vintage Performance Summary</h3>
+                    <p style="margin: 0; color: {WB_MUTED}; font-size: 0.9rem;">
+                        Comprehensive breakdown of loan performance metrics by vintage cohort, including cumulative default rates and annualized statistics.
+                    </p>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
             try:
                 summary_df = compute_vintage_default_summary(chosen_df_raw, dpd_threshold=dpd_threshold)
-                st.caption('Observation_Time = default date − first obs (if defaulted), else last obs − first obs (years).')
+
+                # Key metrics cards
+                total_loans = summary_df['Unique_loans'].sum()
+                total_defaults = summary_df['Defaulted_loans'].sum()
+                avg_pd = (total_defaults / total_loans * 100) if total_loans > 0 else 0
+
+                st.markdown(
+                    f"""
+                    <div style="
+                        display: grid;
+                        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+                        gap: 16px;
+                        margin-bottom: 24px;
+                    ">
+                        <div style="
+                            background: white;
+                            border-radius: 12px;
+                            padding: 20px;
+                            border: 1px solid {WB_BORDER};
+                            text-align: center;
+                        ">
+                            <div style="color: {WB_MUTED}; font-size: 0.75rem; text-transform: uppercase;">Total Loans</div>
+                            <div style="color: {WB_TEXT}; font-size: 1.5rem; font-weight: 700;">{total_loans:,}</div>
+                        </div>
+                        <div style="
+                            background: white;
+                            border-radius: 12px;
+                            padding: 20px;
+                            border: 1px solid {WB_BORDER};
+                            text-align: center;
+                        ">
+                            <div style="color: {WB_MUTED}; font-size: 0.75rem; text-transform: uppercase;">Total Defaults</div>
+                            <div style="color: #EF4444; font-size: 1.5rem; font-weight: 700;">{total_defaults:,}</div>
+                        </div>
+                        <div style="
+                            background: white;
+                            border-radius: 12px;
+                            padding: 20px;
+                            border: 1px solid {WB_BORDER};
+                            text-align: center;
+                        ">
+                            <div style="color: {WB_MUTED}; font-size: 0.75rem; text-transform: uppercase;">Avg Default Rate</div>
+                            <div style="color: {WB_PRIMARY}; font-size: 1.5rem; font-weight: 700;">{avg_pd:.2f}%</div>
+                        </div>
+                        <div style="
+                            background: white;
+                            border-radius: 12px;
+                            padding: 20px;
+                            border: 1px solid {WB_BORDER};
+                            text-align: center;
+                        ">
+                            <div style="color: {WB_MUTED}; font-size: 0.75rem; text-transform: uppercase;">Vintages</div>
+                            <div style="color: {WB_TEXT}; font-size: 1.5rem; font-weight: 700;">{len(summary_df)}</div>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+                st.markdown(
+                    f"""
+                    <div style="
+                        background: white;
+                        border-radius: 12px;
+                        padding: 16px 20px;
+                        border: 1px solid {WB_BORDER};
+                        margin-bottom: 16px;
+                    ">
+                        <div style="font-size: 0.9rem; font-weight: 600; color: {WB_TEXT};">📊 Vintage Default Summary Table</div>
+                        <div style="font-size: 0.8rem; color: {WB_MUTED};">
+                            Observation Time = default date − first observation (if defaulted), else last observation − first observation (in years)
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
 
                 # Rename only for display
                 disp = summary_df.rename(columns={
@@ -941,56 +1914,120 @@ with right:
                 styler = (
                     table.style
                     .format(styles)
-                    .background_gradient(subset=["Cum PD (%)", "Annualized default rate (%)"], cmap="Reds")
+                    .background_gradient(subset=["Cum PD (%)", "Annualized default rate (%)"], cmap="Blues")
                     .hide(axis="index")
                 )
 
-                st.dataframe(styler, use_container_width=True)
+                st.dataframe(styler, use_container_width=True, height=400)
 
+                st.markdown("#### 📥 Export Data")
                 st.download_button(
-                    'Download CSV (vintage default summary)',
+                    '📊 Download CSV',
                     summary_df.to_csv(index=False).encode('utf-8'),
-                    'vintage_default_summary.csv','text/csv'
+                    'vintage_default_summary.csv',
+                    'text/csv',
+                    use_container_width=False
                 )
             except Exception as e:
-                st.info(f'Could not compute vintage default summary: {e}')
+                st.error(f'❌ Could not compute vintage default summary: {e}')
 
-            st.divider()
-
-        # ---- Vintage curves ----
+        # ════════════════════════════════════════════════════════════════════
+        # CHARTS TAB
+        # ════════════════════════════════════════════════════════════════════
         with tab_charts:
-            st.subheader('Vintage curves (months on axis)')
-            col_chart, col_settings = st.columns([3, 0.5], gap="large")
+            st.markdown(
+                f"""
+                <div style="
+                    background: linear-gradient(135deg, {WB_LIGHT} 0%, white 100%);
+                    border-radius: 16px;
+                    padding: 24px;
+                    border: 1px solid {WB_BORDER};
+                    margin-bottom: 24px;
+                ">
+                    <h3 style="margin: 0 0 8px 0; color: {WB_TEXT};">Vintage Curve Visualization</h3>
+                    <p style="margin: 0; color: {WB_MUTED}; font-size: 0.9rem;">
+                        Interactive default rate curves showing cumulative performance evolution across loan cohorts over time.
+                    </p>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+            col_chart, col_settings = st.columns([3, 1], gap="large")
 
             with col_settings:
-                st.header('Chart settings')
-                granularity = st.selectbox('Granularity', ['Quarterly (QOB)', 'Monthly (MOB)'], index=0)
+                # Settings panel card
+                st.markdown(
+                    f"""
+                    <div style="
+                        background: white;
+                        border-radius: 12px;
+                        padding: 20px;
+                        border: 1px solid {WB_BORDER};
+                        margin-bottom: 16px;
+                    ">
+                        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 16px;">
+                            <div style="
+                                background: linear-gradient(135deg, {WB_PRIMARY} 0%, {WB_SECONDARY} 100%);
+                                width: 32px;
+                                height: 32px;
+                                border-radius: 8px;
+                                display: flex;
+                                align-items: center;
+                                justify-content: center;
+                            ">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                                    <line x1="4" y1="21" x2="4" y2="14"></line>
+                                    <line x1="4" y1="10" x2="4" y2="3"></line>
+                                    <line x1="12" y1="21" x2="12" y2="12"></line>
+                                    <line x1="12" y1="8" x2="12" y2="3"></line>
+                                    <line x1="20" y1="21" x2="20" y2="16"></line>
+                                    <line x1="20" y1="12" x2="20" y2="3"></line>
+                                    <line x1="1" y1="14" x2="7" y2="14"></line>
+                                    <line x1="9" y1="8" x2="15" y2="8"></line>
+                                    <line x1="17" y1="16" x2="23" y2="16"></line>
+                                </svg>
+                            </div>
+                            <span style="font-weight: 600; color: {WB_TEXT};">Chart Settings</span>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+                granularity = st.selectbox('📅 Time Granularity', ['Quarterly (QOB)', 'Monthly (MOB)'], index=0)
                 gran_key = 'QOB' if 'QOB' in granularity else 'MOB'
-                max_months_show = st.slider('Show curves up to (months)', min_value=12, max_value=180, value=60, step=6)
-                smooth_curves = st.checkbox('Smooth curves', value=True)
-                force_monotone = st.checkbox('Force monotone (cummax)', value=True)
+                max_months_show = st.slider('📏 Max Months to Display', min_value=12, max_value=180, value=60, step=6)
+
+                st.markdown("---")
+                st.markdown("**Curve Processing**")
+                smooth_curves = st.checkbox('🔄 Smooth curves', value=True)
+                force_monotone = st.checkbox('📈 Force monotone (cummax)', value=True)
                 cure_adjusted = st.checkbox(
-                    'Cure-adjusted (point-in-time)',
+                    '💊 Cure-adjusted mode',
                     value=False,
-                    help='Use current DPD status at each snapshot instead of cumulative ever-defaulted flag.',
+                    help='Use current DPD status at each snapshot instead of cumulative ever-defaulted flag.'
                 )
                 exclude_flagged = st.checkbox(
-                    'Exclude flagged rows',
+                    '🚫 Exclude flagged rows',
                     value=False,
-                    help='Exclude rows flagged by integrity checks. Run integrity checks first.',
+                    help='Exclude rows flagged by integrity checks. Run integrity checks first.'
                 )
-                show_legend = st.checkbox('Show legend in chart', value=True)
-                palette_option = st.selectbox('Color palette', ['Gradient', 'Plotly', 'Viridis'])
+
+                st.markdown("---")
+                st.markdown("**Visual Options**")
+                show_legend = st.checkbox('📋 Show legend', value=True)
+                palette_option = st.selectbox('🎨 Color palette', ['Gradient', 'Plotly', 'Viridis'])
                 base_color = st.color_picker(
-                    'Base chart color',
-                    value=st.get_option("theme.primaryColor") or '#1f77b4',
-                    help='Used when Gradient palette is selected.',
+                    '🖌️ Base color',
+                    value=WB_PRIMARY,
+                    help='Used when Gradient palette is selected.'
                 )
-                line_width = st.slider('Line width', min_value=1, max_value=5, value=1)
+                line_width = st.slider('✏️ Line width', min_value=1, max_value=5, value=2)
 
             with col_chart:
                 try:
-                    prog_bar = st.progress(0.0, text="Initializing …")
+                    prog_bar = st.progress(0.0, text="Initializing chart pipeline...")
                     upd = mk_progress_updater(prog_bar, steps=5)
 
                     if gran_key == 'QOB':
@@ -1012,20 +2049,42 @@ with right:
                     )
 
                     if df_plot_any.empty:
-                        prog_bar.progress(1.0, text="No data to plot.")
-                        st.info('Not enough data to plot curves for the chosen dataset.')
+                        prog_bar.progress(1.0, text="Complete")
+                        st.warning('⚠️ Insufficient data to generate curves for the selected parameters.')
                     else:
                         vintages = df_plot_any.columns.tolist()
-                        selected_vintages = st.multiselect('Vintages to display', vintages, default=vintages)
+                        st.markdown(
+                            f"""
+                            <div style="
+                                background: white;
+                                border-radius: 10px;
+                                padding: 12px 16px;
+                                border: 1px solid {WB_BORDER};
+                                margin-bottom: 16px;
+                            ">
+                                <span style="font-size: 0.85rem; font-weight: 500; color: {WB_TEXT};">
+                                    🏷️ Select vintages to display ({len(vintages)} available)
+                                </span>
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
+                        selected_vintages = st.multiselect(
+                            'Select vintages',
+                            vintages,
+                            default=vintages,
+                            label_visibility="collapsed"
+                        )
+
                         if not selected_vintages:
-                            prog_bar.progress(1.0, text="No vintages selected.")
-                            st.info('Select at least one vintage to plot.')
+                            prog_bar.progress(1.0, text="Complete")
+                            st.info('ℹ️ Select at least one vintage to display the chart.')
                         else:
                             df_plot = df_plot_any[selected_vintages]
-                            prog_bar.progress(0.9, text="Rendering chart …")
-                            ttl = f'Vintage Default-Rate Evolution | DPD≥{dpd_threshold}'
+                            prog_bar.progress(0.9, text="Rendering visualization...")
+                            ttl = f'Vintage Default-Rate Evolution | DPD ≥ {dpd_threshold}'
                             if cure_adjusted:
-                                ttl += ' | cure-adjusted'
+                                ttl += ' | Cure-Adjusted'
                             fig = plot_curves_percent_with_months(
                                 df_wide=df_plot,
                                 title=ttl,
@@ -1036,25 +2095,83 @@ with right:
                                 line_width=line_width,
                                 cohort_sizes=cohort_sizes,
                             )
-                            prog_bar.progress(1.0, text="Done")
+                            prog_bar.progress(1.0, text="✅ Chart ready")
 
-                            st.plotly_chart(fig, use_container_width=True)
+                            st.plotly_chart(fig, use_container_width=True, config={
+                                'displayModeBar': True,
+                                'displaylogo': False,
+                                'modeBarButtonsToRemove': ['lasso2d', 'select2d']
+                            })
 
+                            # Export section
+                            st.markdown("#### 📥 Export Chart Data")
                             period_col = df_plot.index.name or gran_key
                             export_df = df_plot.reset_index()
                             if gran_key == 'QOB':
                                 export_df.insert(0, "Months", export_df[period_col] * 3)
-                            st.download_button(
-                                f'Download curves (CSV; {gran_key})',
-                                export_df.to_csv(index=False).encode('utf-8'),
-                                f'vintage_curves_{gran_key.lower()}.csv', 'text/csv')
+
+                            exp_col1, exp_col2, exp_col3 = st.columns([1, 1, 2])
+                            with exp_col1:
+                                st.download_button(
+                                    f'📊 Download CSV',
+                                    export_df.to_csv(index=False).encode('utf-8'),
+                                    f'vintage_curves_{gran_key.lower()}.csv',
+                                    'text/csv',
+                                    use_container_width=True
+                                )
 
                 except Exception as e:
-                    st.info(f'Plot skipped, {e}')
+                    st.error(f'❌ Chart generation failed: {e}')
 
 
     else:
-        st.caption('Upload an Excel to continue.')
+        # Empty state - no data loaded
+        st.markdown(
+            f"""
+            <div style="
+                background: white;
+                border-radius: 20px;
+                padding: 60px 40px;
+                text-align: center;
+                border: 2px dashed {WB_BORDER};
+                margin: 40px 0;
+            ">
+                <div style="
+                    background: {WB_LIGHT};
+                    width: 80px;
+                    height: 80px;
+                    border-radius: 20px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    margin: 0 auto 24px auto;
+                ">
+                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="{WB_PRIMARY}" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="17 8 12 3 7 8"/>
+                        <line x1="12" y1="3" x2="12" y2="15"/>
+                    </svg>
+                </div>
+                <h2 style="margin: 0 0 12px 0; color: {WB_TEXT}; font-weight: 600;">No Data Loaded</h2>
+                <p style="margin: 0; color: {WB_MUTED}; font-size: 1rem; max-width: 400px; margin: 0 auto;">
+                    Upload an Excel file (.xlsx) using the panel on the left to begin your vintage curve analysis.
+                </p>
+                <div style="margin-top: 24px;">
+                    <span style="
+                        background: {WB_LIGHT};
+                        color: {WB_PRIMARY};
+                        padding: 8px 16px;
+                        border-radius: 20px;
+                        font-size: 0.85rem;
+                        font-weight: 500;
+                    ">
+                        Supported format: .xlsx
+                    </span>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
         
 
 
