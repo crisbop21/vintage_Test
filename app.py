@@ -887,8 +887,12 @@ def build_chart_data_fast(raw_df: pd.DataFrame, dpd_threshold: int,
         'LoanID': base['Loan ID'].to_numpy(),
     }
     if pd_by_amount:
-        work_cols['Origination_amount'] = base['Origination amount'].to_numpy()
-        work_cols['Current_amount'] = base['Current amount'].to_numpy()
+        orig_amt = base['Origination amount'].to_numpy(dtype='float32', copy=True)
+        cur_amt = base['Current amount'].to_numpy(dtype='float32', copy=True)
+        orig_amt = np.nan_to_num(orig_amt, nan=0.0)
+        cur_amt = np.nan_to_num(cur_amt, nan=0.0)
+        work_cols['Origination_amount'] = orig_amt
+        work_cols['Current_amount'] = cur_amt
         if not cure_adjusted:
             # Raw flags needed to find the actual first-default observation
             raw_flags = (base['Days past due'].to_numpy(np.float32, copy=False)
@@ -923,8 +927,8 @@ def build_chart_data_fast(raw_df: pd.DataFrame, dpd_threshold: int,
                                ['Current_amount'].last().reset_index())
             agg = (loan_period_amt.groupby(['Vintage', period_col], sort=False)
                    ['Current_amount'].sum().reset_index(name='total_default_amount'))
-            agg['total_orig'] = agg['Vintage'].map(vintage_total_orig_amt)
-            agg['default_rate'] = (agg['total_default_amount'] / agg['total_orig']).astype('float32')
+            agg['total_orig'] = agg['Vintage'].map(vintage_total_orig_amt).replace(0, np.nan)
+            agg['default_rate'] = (agg['total_default_amount'] / agg['total_orig']).fillna(0).astype('float32')
             wide = (agg.pivot(index=period_col, columns='Vintage', values='default_rate')
                        .sort_index()
                        .reindex(range(1, max_p + 1)))
@@ -946,8 +950,8 @@ def build_chart_data_fast(raw_df: pd.DataFrame, dpd_threshold: int,
                                      .reindex(full_idx, fill_value=0)
                                      .reset_index())
             cum_df['cum_default_amount'] = cum_df.groupby('Vintage')['new_default_amount'].cumsum()
-            cum_df['total_orig'] = cum_df['Vintage'].map(vintage_total_orig_amt)
-            cum_df['default_rate'] = (cum_df['cum_default_amount'] / cum_df['total_orig']).astype('float32')
+            cum_df['total_orig'] = cum_df['Vintage'].map(vintage_total_orig_amt).replace(0, np.nan)
+            cum_df['default_rate'] = (cum_df['cum_default_amount'] / cum_df['total_orig']).fillna(0).astype('float32')
             wide = (cum_df.pivot(index=period_col, columns='Vintage', values='default_rate')
                           .sort_index()
                           .reindex(range(1, max_p + 1)))
@@ -1592,7 +1596,7 @@ def compute_vintage_default_summary(raw_df: pd.DataFrame, dpd_threshold: int,
     if pd_by_amount:
         # Get origination amount per loan (first observation)
         loan_orig_amt = g['Origination amount'].first()
-        loan_df['Origination_amount'] = loan_orig_amt
+        loan_df['Origination_amount'] = loan_orig_amt.fillna(0.0)
 
         # Get current amount at first default date for each defaulted loan
         def_rows = dfn.loc[dfn['__def']].copy()
@@ -1600,6 +1604,7 @@ def compute_vintage_default_summary(raw_df: pd.DataFrame, dpd_threshold: int,
                           .drop_duplicates(subset='Loan ID', keep='first'))
         first_def_cur_amt = first_def_rows.set_index('Loan ID')['Current amount']
         loan_df['Default_current_amount'] = first_def_cur_amt
+        loan_df['Default_current_amount'] = loan_df['Default_current_amount'].fillna(0.0)
         loan_df.loc[~loan_df['defaulted'], 'Default_current_amount'] = 0.0
 
         out = (loan_df.groupby('Vintage', as_index=False)
