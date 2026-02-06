@@ -25,8 +25,6 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 import plotly.graph_objects as go
 from plotly.colors import hex_to_rgb, qualitative, sequential
-import plotly.io as pio
-
 import streamlit as st
 
 # ──────────────────────────────────────────────────────────────────────────────
