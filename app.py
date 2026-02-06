@@ -855,6 +855,7 @@ def build_chart_data_fast(raw_df: pd.DataFrame, dpd_threshold: int,
                           force_monotone: bool = True,
                           cure_adjusted: bool = False,
                           exclude_indices: Optional[set] = None,
+                          pd_by_amount: bool = False,
                           prog: Optional[Callable[[str], None]] = None) -> tuple[pd.DataFrame, dict]:
     if prog: prog("Preparing base dataset …")
     base = prepare_base_cached(raw_df)
@@ -879,65 +880,122 @@ def build_chart_data_fast(raw_df: pd.DataFrame, dpd_threshold: int,
         is_def = _cum_or_by_group(codes, flags)
 
     if prog: prog(f"Aggregating cohorts ({period_col}) …")
-    work = pd.DataFrame({
+    work_cols = {
         'Vintage': base['Vintage'].to_numpy(),
         period_col: base[period_col].to_numpy(),
         'is_def': is_def,
-        'LoanID': base['Loan ID'].to_numpy()
-    })
+        'LoanID': base['Loan ID'].to_numpy(),
+    }
+    if pd_by_amount:
+        work_cols['Origination_amount'] = base['Origination amount'].to_numpy()
+        work_cols['Current_amount'] = base['Current amount'].to_numpy()
+        if not cure_adjusted:
+            # Raw flags needed to find the actual first-default observation
+            raw_flags = (base['Days past due'].to_numpy(np.float32, copy=False)
+                         >= dpd_threshold).astype(np.uint8, copy=False)
+            work_cols['raw_def'] = raw_flags
+    work = pd.DataFrame(work_cols)
 
     if work.empty:
         if prog: prog("No data to plot.")
         return pd.DataFrame(), {}
 
-    # Fixed denominator: total unique loans per vintage (matches table logic)
-    vintage_total_loans = work.groupby('Vintage')['LoanID'].nunique()
-    cohort_sizes = vintage_total_loans.to_dict()
-
-    # Deduplicate to one row per (loan, period): take max of is_def
-    loan_period = (work.groupby(['Vintage', period_col, 'LoanID'], sort=False)['is_def']
-                       .max().reset_index())
-    loan_period[period_col] = pd.to_numeric(loan_period[period_col], errors='coerce').astype('int16')
-    max_p = min(int(loan_period[period_col].max()), max_periods)
-
-    if cure_adjusted:
-        # Cure-adjusted: count currently-defaulted unique loans per (vintage, period)
-        agg = (loan_period.groupby(['Vintage', period_col], sort=False)
-               .agg(total_default=('is_def', 'sum'))
-               .reset_index())
-        agg['total_loans'] = agg['Vintage'].map(vintage_total_loans)
-        agg['default_rate'] = (agg['total_default'] / agg['total_loans']).astype('float32')
-        wide = (agg.pivot(index=period_col, columns='Vintage', values='default_rate')
-                   .sort_index()
-                   .reindex(range(1, max_p + 1)))
+    if pd_by_amount:
+        # Denominator: total origination amount per vintage (one entry per loan)
+        loan_first = work.drop_duplicates(subset='LoanID', keep='first')
+        vintage_total_orig_amt = loan_first.groupby('Vintage')['Origination_amount'].sum()
+        cohort_sizes = vintage_total_orig_amt.to_dict()
     else:
-        # Non-cure-adjusted: cumulative unique defaults by period
-        # Find the earliest period each loan first defaults
-        defaulted = loan_period.loc[loan_period['is_def'] == 1]
-        first_def = (defaulted.groupby(['Vintage', 'LoanID'])[period_col]
-                              .min().reset_index()
-                              .rename(columns={period_col: 'first_def_period'}))
+        # Fixed denominator: total unique loans per vintage (matches table logic)
+        vintage_total_loans = work.groupby('Vintage')['LoanID'].nunique()
+        cohort_sizes = vintage_total_loans.to_dict()
 
-        # Count new defaults at each period per vintage
-        new_defaults = (first_def.groupby(['Vintage', 'first_def_period'])
-                                 .size().reset_index(name='new_defaults')
-                                 .rename(columns={'first_def_period': period_col}))
+    all_periods = pd.to_numeric(work[period_col], errors='coerce').dropna()
+    max_p = min(int(all_periods.max()), max_periods) if len(all_periods) > 0 else max_periods
 
-        # Build full (vintage, period) grid and compute cumulative defaults
-        vintages = work['Vintage'].unique()
-        periods = list(range(1, max_p + 1))
-        full_idx = pd.MultiIndex.from_product([vintages, periods],
-                                              names=['Vintage', period_col])
-        cum_df = (new_defaults.set_index(['Vintage', period_col])
-                              .reindex(full_idx, fill_value=0)
-                              .reset_index())
-        cum_df['cum_defaults'] = cum_df.groupby('Vintage')['new_defaults'].cumsum()
-        cum_df['total_loans'] = cum_df['Vintage'].map(vintage_total_loans)
-        cum_df['default_rate'] = (cum_df['cum_defaults'] / cum_df['total_loans']).astype('float32')
+    if pd_by_amount:
+        # ── Amount-weighted PD ──
+        if cure_adjusted:
+            # Sum Current Amount of currently-defaulted loans per (vintage, period)
+            def_rows = work.loc[work['is_def'] == 1]
+            # Deduplicate per (vintage, period, loan): take last observation's amount
+            loan_period_amt = (def_rows.groupby(['Vintage', period_col, 'LoanID'], sort=False)
+                               ['Current_amount'].last().reset_index())
+            agg = (loan_period_amt.groupby(['Vintage', period_col], sort=False)
+                   ['Current_amount'].sum().reset_index(name='total_default_amount'))
+            agg['total_orig'] = agg['Vintage'].map(vintage_total_orig_amt)
+            agg['default_rate'] = (agg['total_default_amount'] / agg['total_orig']).astype('float32')
+            wide = (agg.pivot(index=period_col, columns='Vintage', values='default_rate')
+                       .sort_index()
+                       .reindex(range(1, max_p + 1)))
+        else:
+            # Non-cure-adjusted: find first actual default observation per loan,
+            # get Current Amount at that observation, cumulate over periods
+            actual_defaults = work.loc[work['raw_def'] == 1]
+            first_def = (actual_defaults.sort_values(period_col)
+                         .drop_duplicates(subset='LoanID', keep='first'))
+            # Sum new default amounts at each period per vintage
+            new_def_amounts = (first_def.groupby(['Vintage', period_col])['Current_amount']
+                               .sum().reset_index(name='new_default_amount'))
+            # Build full (vintage, period) grid and compute cumulative
+            vintages = work['Vintage'].unique()
+            periods = list(range(1, max_p + 1))
+            full_idx = pd.MultiIndex.from_product([vintages, periods],
+                                                  names=['Vintage', period_col])
+            cum_df = (new_def_amounts.set_index(['Vintage', period_col])
+                                     .reindex(full_idx, fill_value=0)
+                                     .reset_index())
+            cum_df['cum_default_amount'] = cum_df.groupby('Vintage')['new_default_amount'].cumsum()
+            cum_df['total_orig'] = cum_df['Vintage'].map(vintage_total_orig_amt)
+            cum_df['default_rate'] = (cum_df['cum_default_amount'] / cum_df['total_orig']).astype('float32')
+            wide = (cum_df.pivot(index=period_col, columns='Vintage', values='default_rate')
+                          .sort_index()
+                          .reindex(range(1, max_p + 1)))
+    else:
+        # ── Loan-count PD (original logic) ──
+        # Deduplicate to one row per (loan, period): take max of is_def
+        loan_period = (work.groupby(['Vintage', period_col, 'LoanID'], sort=False)['is_def']
+                           .max().reset_index())
+        loan_period[period_col] = pd.to_numeric(loan_period[period_col], errors='coerce').astype('int16')
 
-        wide = (cum_df.pivot(index=period_col, columns='Vintage', values='default_rate')
-                      .sort_index()
-                      .reindex(range(1, max_p + 1)))
+        if cure_adjusted:
+            # Cure-adjusted: count currently-defaulted unique loans per (vintage, period)
+            agg = (loan_period.groupby(['Vintage', period_col], sort=False)
+                   .agg(total_default=('is_def', 'sum'))
+                   .reset_index())
+            agg['total_loans'] = agg['Vintage'].map(vintage_total_loans)
+            agg['default_rate'] = (agg['total_default'] / agg['total_loans']).astype('float32')
+            wide = (agg.pivot(index=period_col, columns='Vintage', values='default_rate')
+                       .sort_index()
+                       .reindex(range(1, max_p + 1)))
+        else:
+            # Non-cure-adjusted: cumulative unique defaults by period
+            # Find the earliest period each loan first defaults
+            defaulted = loan_period.loc[loan_period['is_def'] == 1]
+            first_def = (defaulted.groupby(['Vintage', 'LoanID'])[period_col]
+                                  .min().reset_index()
+                                  .rename(columns={period_col: 'first_def_period'}))
+
+            # Count new defaults at each period per vintage
+            new_defaults = (first_def.groupby(['Vintage', 'first_def_period'])
+                                     .size().reset_index(name='new_defaults')
+                                     .rename(columns={'first_def_period': period_col}))
+
+            # Build full (vintage, period) grid and compute cumulative defaults
+            vintages = work['Vintage'].unique()
+            periods = list(range(1, max_p + 1))
+            full_idx = pd.MultiIndex.from_product([vintages, periods],
+                                                  names=['Vintage', period_col])
+            cum_df = (new_defaults.set_index(['Vintage', period_col])
+                                  .reindex(full_idx, fill_value=0)
+                                  .reset_index())
+            cum_df['cum_defaults'] = cum_df.groupby('Vintage')['new_defaults'].cumsum()
+            cum_df['total_loans'] = cum_df['Vintage'].map(vintage_total_loans)
+            cum_df['default_rate'] = (cum_df['cum_defaults'] / cum_df['total_loans']).astype('float32')
+
+            wide = (cum_df.pivot(index=period_col, columns='Vintage', values='default_rate')
+                          .sort_index()
+                          .reindex(range(1, max_p + 1)))
 
     # Save raw endpoint values before smoothing (for anchoring)
     raw_endpoints = {}
@@ -983,7 +1041,8 @@ def plot_curves_percent_with_months(df_wide: pd.DataFrame,
                                     axis_font_size: int = 13,
                                     show_grid: bool = True,
                                     y_axis_max: float = 0.0,
-                                    bg_color: str = "#FFFFFF"):
+                                    bg_color: str = "#FFFFFF",
+                                    pd_by_amount: bool = False):
     if df_wide.empty:
         st.info('Not enough data to plot.')
         return None
@@ -1035,7 +1094,10 @@ def plot_curves_percent_with_months(df_wide: pd.DataFrame,
     for i, col in enumerate(df_wide.columns):
         label = str(col)
         if cohort_sizes and col in cohort_sizes:
-            label = f"{col} (n={int(cohort_sizes[col]):,})"
+            if pd_by_amount:
+                label = f"{col} (${cohort_sizes[col]:,.0f})"
+            else:
+                label = f"{col} (n={int(cohort_sizes[col]):,})"
         trace_kwargs = dict(
             x=x_months,
             y=Y[:, i],
@@ -1051,7 +1113,8 @@ def plot_curves_percent_with_months(df_wide: pd.DataFrame,
     grid_color = '#E2E8F0' if show_grid else 'rgba(0,0,0,0)'
 
     yaxis_cfg = dict(
-        title=dict(text='Cumulative Default Rate', font=dict(size=axis_font_size, color='#64748B')),
+        title=dict(text='Cumulative Default Rate (by Amount)' if pd_by_amount else 'Cumulative Default Rate',
+                   font=dict(size=axis_font_size, color='#64748B')),
         tickformat='.2%',
         tickfont=dict(size=11, color='#64748B'),
         gridcolor=grid_color,
@@ -1503,7 +1566,8 @@ def export_consistency_excel(summary_df: pd.DataFrame,
 # ──────────────────────────────────────────────────────────────────────────────
 # Vintage default summary (Cum_PD, Obs_Time, annualized rate)
 # ──────────────────────────────────────────────────────────────────────────────
-def compute_vintage_default_summary(raw_df: pd.DataFrame, dpd_threshold: int) -> pd.DataFrame:
+def compute_vintage_default_summary(raw_df: pd.DataFrame, dpd_threshold: int,
+                                    pd_by_amount: bool = False) -> pd.DataFrame:
     dfn = normalize_columns(raw_df); dfn = ensure_types(dfn); dfn = add_vintage_mob(dfn)
     dfn = dfn.sort_values(['Loan ID','Observation date'])
     dfn['__def'] = (dfn['Days past due'] >= dpd_threshold)
@@ -1525,11 +1589,37 @@ def compute_vintage_default_summary(raw_df: pd.DataFrame, dpd_threshold: int) ->
     loan_df['Obs_Time_years'] = (obs_days / 365.25).astype('float32')
     loan_df.loc[loan_df['Obs_Time_years'] <= 0, 'Obs_Time_years'] = np.nan
 
-    out = (loan_df.groupby('Vintage', as_index=False)
-           .agg(Unique_loans=('Vintage','size'),
-                Defaulted_loans=('defaulted','sum'),
-                Cum_PD=('defaulted','mean'),
-                Observation_Time=('Obs_Time_years','median')))
+    if pd_by_amount:
+        # Get origination amount per loan (first observation)
+        loan_orig_amt = g['Origination amount'].first()
+        loan_df['Origination_amount'] = loan_orig_amt
+
+        # Get current amount at first default date for each defaulted loan
+        def_rows = dfn.loc[dfn['__def']].copy()
+        first_def_rows = (def_rows.sort_values('Observation date')
+                          .drop_duplicates(subset='Loan ID', keep='first'))
+        first_def_cur_amt = first_def_rows.set_index('Loan ID')['Current amount']
+        loan_df['Default_current_amount'] = first_def_cur_amt
+        loan_df.loc[~loan_df['defaulted'], 'Default_current_amount'] = 0.0
+
+        out = (loan_df.groupby('Vintage', as_index=False)
+               .agg(Unique_loans=('Vintage', 'size'),
+                    Defaulted_loans=('defaulted', 'sum'),
+                    Total_Origination_Amount=('Origination_amount', 'sum'),
+                    Total_Default_Amount=('Default_current_amount', 'sum'),
+                    Observation_Time=('Obs_Time_years', 'median')))
+        out['Cum_PD'] = np.where(
+            out['Total_Origination_Amount'] > 0,
+            out['Total_Default_Amount'] / out['Total_Origination_Amount'],
+            0.0
+        ).astype('float32')
+    else:
+        out = (loan_df.groupby('Vintage', as_index=False)
+               .agg(Unique_loans=('Vintage','size'),
+                    Defaulted_loans=('defaulted','sum'),
+                    Cum_PD=('defaulted','mean'),
+                    Observation_Time=('Obs_Time_years','median')))
+
     m = out['Observation_Time'] > 0
     out['Default_rate_pa'] = np.nan
     out.loc[m, 'Default_rate_pa'] = 1 - np.power(1 - out.loc[m, 'Cum_PD'], 1 / out.loc[m, 'Observation_Time'])
@@ -1978,13 +2068,30 @@ with right:
                 unsafe_allow_html=True
             )
 
+            pd_calc_method_table = st.selectbox(
+                '📐 PD Calculation Method',
+                ['By Loan Count', 'By Amount (Current / Origination)'],
+                index=0,
+                help='By Loan Count: defaulted loans / total loans. '
+                     'By Amount: sum of Current Amount at default date / sum of Origination Amount.',
+                key='pd_calc_method_table',
+            )
+            pd_by_amount_table = pd_calc_method_table == 'By Amount (Current / Origination)'
+
             try:
-                summary_df = compute_vintage_default_summary(chosen_df_raw, dpd_threshold=dpd_threshold)
+                summary_df = compute_vintage_default_summary(
+                    chosen_df_raw, dpd_threshold=dpd_threshold,
+                    pd_by_amount=pd_by_amount_table)
 
                 # Key metrics cards
                 total_loans = summary_df['Unique_loans'].sum()
                 total_defaults = summary_df['Defaulted_loans'].sum()
-                avg_pd = (total_defaults / total_loans * 100) if total_loans > 0 else 0
+                if pd_by_amount_table:
+                    total_orig_amt = summary_df['Total_Origination_Amount'].sum()
+                    total_def_amt = summary_df['Total_Default_Amount'].sum()
+                    avg_pd = (total_def_amt / total_orig_amt * 100) if total_orig_amt > 0 else 0
+                else:
+                    avg_pd = (total_defaults / total_loans * 100) if total_loans > 0 else 0
 
                 st.markdown(
                     f"""
@@ -2021,7 +2128,7 @@ with right:
                             border: 1px solid {WB_BORDER};
                             text-align: center;
                         ">
-                            <div style="color: {WB_MUTED}; font-size: 0.75rem; text-transform: uppercase;">Avg Default Rate</div>
+                            <div style="color: {WB_MUTED}; font-size: 0.75rem; text-transform: uppercase;">Avg Default Rate {'(by Amt)' if pd_by_amount_table else '(by Count)'}</div>
                             <div style="color: {WB_PRIMARY}; font-size: 1.5rem; font-weight: 700;">{avg_pd:.2f}%</div>
                         </div>
                         <div style="
@@ -2048,9 +2155,9 @@ with right:
                         border: 1px solid {WB_BORDER};
                         margin-bottom: 16px;
                     ">
-                        <div style="font-size: 0.9rem; font-weight: 600; color: {WB_TEXT};">📊 Vintage Default Summary Table</div>
+                        <div style="font-size: 0.9rem; font-weight: 600; color: {WB_TEXT};">📊 Vintage Default Summary Table {'(by Amount)' if pd_by_amount_table else '(by Loan Count)'}</div>
                         <div style="font-size: 0.8rem; color: {WB_MUTED};">
-                            Observation Time = default date − first observation (if defaulted), else last observation − first observation (in years)
+                            {'Cum PD = Σ Current Amount at default / Σ Origination Amount. ' if pd_by_amount_table else ''}Observation Time = default date − first observation (if defaulted), else last observation − first observation (in years)
                         </div>
                     </div>
                     """,
@@ -2058,31 +2165,56 @@ with right:
                 )
 
                 # Rename only for display
-                disp = summary_df.rename(columns={
+                rename_map = {
                     "Unique_loans": "Unique loans",
                     "Defaulted_loans": "Defaulted loans",
                     "Observation_Time": "Obs Time (years)",
                     "Default_rate_pa": "Annualized default rate",
                     "Cum_PD": "Cum PD",
-                })
+                }
+                if pd_by_amount_table:
+                    rename_map["Total_Origination_Amount"] = "Total Origination Amt"
+                    rename_map["Total_Default_Amount"] = "Default Amt (Current)"
+                disp = summary_df.rename(columns=rename_map)
                 disp["Cum PD (%)"] = disp["Cum PD"] * 100
                 disp["Annualized default rate (%)"] = disp["Annualized default rate"] * 100
 
-                table = disp[[
-                    "Vintage",
-                    "Unique loans",
-                    "Defaulted loans",
-                    "Cum PD (%)",
-                    "Obs Time (years)",
-                    "Annualized default rate (%)",
-                ]]
-                styles = {
-                    "Unique loans": "{:,.0f}" if pretty_ints else "{:.0f}",
-                    "Defaulted loans": "{:,.0f}" if pretty_ints else "{:.0f}",
-                    "Cum PD (%)": "{:.2f}",
-                    "Obs Time (years)": "{:.2f}",
-                    "Annualized default rate (%)": "{:.2f}",
-                }
+                if pd_by_amount_table:
+                    table = disp[[
+                        "Vintage",
+                        "Unique loans",
+                        "Defaulted loans",
+                        "Total Origination Amt",
+                        "Default Amt (Current)",
+                        "Cum PD (%)",
+                        "Obs Time (years)",
+                        "Annualized default rate (%)",
+                    ]]
+                    styles = {
+                        "Unique loans": "{:,.0f}" if pretty_ints else "{:.0f}",
+                        "Defaulted loans": "{:,.0f}" if pretty_ints else "{:.0f}",
+                        "Total Origination Amt": "{:,.2f}" if pretty_ints else "{:.2f}",
+                        "Default Amt (Current)": "{:,.2f}" if pretty_ints else "{:.2f}",
+                        "Cum PD (%)": "{:.2f}",
+                        "Obs Time (years)": "{:.2f}",
+                        "Annualized default rate (%)": "{:.2f}",
+                    }
+                else:
+                    table = disp[[
+                        "Vintage",
+                        "Unique loans",
+                        "Defaulted loans",
+                        "Cum PD (%)",
+                        "Obs Time (years)",
+                        "Annualized default rate (%)",
+                    ]]
+                    styles = {
+                        "Unique loans": "{:,.0f}" if pretty_ints else "{:.0f}",
+                        "Defaulted loans": "{:,.0f}" if pretty_ints else "{:.0f}",
+                        "Cum PD (%)": "{:.2f}",
+                        "Obs Time (years)": "{:.2f}",
+                        "Annualized default rate (%)": "{:.2f}",
+                    }
                 styler = (
                     table.style
                     .format(styles)
@@ -2172,6 +2304,18 @@ with right:
                 max_months_show = st.slider('📏 Max Months to Display', min_value=12, max_value=180, value=60, step=6)
 
                 st.markdown("---")
+                st.markdown("**PD Calculation**")
+                pd_calc_method_chart = st.selectbox(
+                    '📐 PD Method',
+                    ['By Loan Count', 'By Amount (Current / Origination)'],
+                    index=0,
+                    help='By Loan Count: defaulted loans / total loans. '
+                         'By Amount: sum of Current Amount at default date / sum of Origination Amount.',
+                    key='pd_calc_method_chart',
+                )
+                pd_by_amount_chart = pd_calc_method_chart == 'By Amount (Current / Origination)'
+
+                st.markdown("---")
                 st.markdown("**Curve Processing**")
                 smooth_curves = st.checkbox('🔄 Smooth curves', value=True)
                 force_monotone = st.checkbox('📈 Force monotone (cummax)', value=True)
@@ -2244,6 +2388,7 @@ with right:
                         force_monotone=force_monotone,
                         cure_adjusted=cure_adjusted,
                         exclude_indices=excl,
+                        pd_by_amount=pd_by_amount_chart,
                         prog=upd,
                     )
 
@@ -2281,7 +2426,11 @@ with right:
                         else:
                             df_plot = df_plot_any[selected_vintages]
                             prog_bar.progress(0.9, text="Rendering visualization...")
-                            ttl = chart_title.strip() if chart_title.strip() else f'Vintage Default-Rate Evolution | DPD ≥ {dpd_threshold}'
+                            if chart_title.strip():
+                                ttl = chart_title.strip()
+                            else:
+                                method_label = 'by Amount' if pd_by_amount_chart else 'by Count'
+                                ttl = f'Vintage Default-Rate Evolution ({method_label}) | DPD ≥ {dpd_threshold}'
                             if not chart_title.strip() and cure_adjusted:
                                 ttl += ' | Cure-Adjusted'
                             fig = plot_curves_percent_with_months(
@@ -2301,6 +2450,7 @@ with right:
                                 show_grid=show_grid,
                                 y_axis_max=y_axis_max,
                                 bg_color=bg_color,
+                                pd_by_amount=pd_by_amount_chart,
                             )
                             prog_bar.progress(1.0, text="✅ Chart ready")
 
@@ -2329,7 +2479,8 @@ with right:
                             with exp_col2:
                                 try:
                                     _summary = compute_vintage_default_summary(
-                                        chosen_df_raw, dpd_threshold=dpd_threshold)
+                                        chosen_df_raw, dpd_threshold=dpd_threshold,
+                                        pd_by_amount=pd_by_amount_chart)
                                     xlsx_bytes = export_consistency_excel(
                                         _summary, df_plot, gran_key)
                                     st.download_button(
