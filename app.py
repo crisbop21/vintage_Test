@@ -879,36 +879,87 @@ def build_chart_data_fast(raw_df: pd.DataFrame, dpd_threshold: int,
         is_def = _cum_or_by_group(codes, flags)
 
     if prog: prog(f"Aggregating cohorts ({period_col}) …")
-    agg = (pd.DataFrame({
-                'Vintage': base['Vintage'].to_numpy(),
-                period_col: base[period_col].to_numpy(),
-                'is_def': is_def,
-                'LoanID': base['Loan ID'].to_numpy()
-           })
-           .groupby(['Vintage', period_col], sort=False)
-           .agg(total_loans=('LoanID', 'nunique'),
-                total_default=('is_def', 'sum'))
-           .reset_index())
+    work = pd.DataFrame({
+        'Vintage': base['Vintage'].to_numpy(),
+        period_col: base[period_col].to_numpy(),
+        'is_def': is_def,
+        'LoanID': base['Loan ID'].to_numpy()
+    })
 
-    if agg.empty:
+    if work.empty:
         if prog: prog("No data to plot.")
         return pd.DataFrame(), {}
 
-    agg[period_col] = pd.to_numeric(agg[period_col], errors='coerce').astype('int16')
-    agg['default_rate'] = (agg['total_default'] / agg['total_loans']).astype('float32')
-    max_p = min(int(agg[period_col].max()), max_periods)
+    # Fixed denominator: total unique loans per vintage (matches table logic)
+    vintage_total_loans = work.groupby('Vintage')['LoanID'].nunique()
+    cohort_sizes = vintage_total_loans.to_dict()
 
-    # Cohort sizes for legend labels
-    cohort_sizes = (agg.groupby('Vintage')['total_loans'].max()
-                       .to_dict())
+    # Deduplicate to one row per (loan, period): take max of is_def
+    loan_period = (work.groupby(['Vintage', period_col, 'LoanID'], sort=False)['is_def']
+                       .max().reset_index())
+    loan_period[period_col] = pd.to_numeric(loan_period[period_col], errors='coerce').astype('int16')
+    max_p = min(int(loan_period[period_col].max()), max_periods)
 
-    wide = (agg.pivot(index=period_col, columns='Vintage', values='default_rate')
-               .sort_index()
-               .reindex(range(1, max_p + 1)))
+    if cure_adjusted:
+        # Cure-adjusted: count currently-defaulted unique loans per (vintage, period)
+        agg = (loan_period.groupby(['Vintage', period_col], sort=False)
+               .agg(total_default=('is_def', 'sum'))
+               .reset_index())
+        agg['total_loans'] = agg['Vintage'].map(vintage_total_loans)
+        agg['default_rate'] = (agg['total_default'] / agg['total_loans']).astype('float32')
+        wide = (agg.pivot(index=period_col, columns='Vintage', values='default_rate')
+                   .sort_index()
+                   .reindex(range(1, max_p + 1)))
+    else:
+        # Non-cure-adjusted: cumulative unique defaults by period
+        # Find the earliest period each loan first defaults
+        defaulted = loan_period.loc[loan_period['is_def'] == 1]
+        first_def = (defaulted.groupby(['Vintage', 'LoanID'])[period_col]
+                              .min().reset_index()
+                              .rename(columns={period_col: 'first_def_period'}))
+
+        # Count new defaults at each period per vintage
+        new_defaults = (first_def.groupby(['Vintage', 'first_def_period'])
+                                 .size().reset_index(name='new_defaults')
+                                 .rename(columns={'first_def_period': period_col}))
+
+        # Build full (vintage, period) grid and compute cumulative defaults
+        vintages = work['Vintage'].unique()
+        periods = list(range(1, max_p + 1))
+        full_idx = pd.MultiIndex.from_product([vintages, periods],
+                                              names=['Vintage', period_col])
+        cum_df = (new_defaults.set_index(['Vintage', period_col])
+                              .reindex(full_idx, fill_value=0)
+                              .reset_index())
+        cum_df['cum_defaults'] = cum_df.groupby('Vintage')['new_defaults'].cumsum()
+        cum_df['total_loans'] = cum_df['Vintage'].map(vintage_total_loans)
+        cum_df['default_rate'] = (cum_df['cum_defaults'] / cum_df['total_loans']).astype('float32')
+
+        wide = (cum_df.pivot(index=period_col, columns='Vintage', values='default_rate')
+                      .sort_index()
+                      .reindex(range(1, max_p + 1)))
+
+    # Save raw endpoint values before smoothing (for anchoring)
+    raw_endpoints = {}
+    for col in wide.columns:
+        s = wide[col].dropna()
+        if len(s) > 0:
+            raw_endpoints[col] = s.iloc[-1]
+
     if smooth:
         wide = wide.rolling(2, 1, center=True).mean()
     if force_monotone:
         wide = wide.cummax()
+
+    # Anchor: restore the last valid data point to raw value so chart
+    # endpoints match the table Cum PD exactly (only for non-cure-adjusted,
+    # since cure-adjusted intentionally shows current status, not cumulative)
+    if not cure_adjusted and (smooth or force_monotone):
+        for col, raw_val in raw_endpoints.items():
+            s = wide[col].dropna()
+            if len(s) > 0:
+                wide.loc[s.index[-1], col] = raw_val
+
     wide = wide.astype('float32')
     wide.index.name = period_col
     return wide, cohort_sizes
@@ -1359,6 +1410,73 @@ def export_issues_excel(issues_df: pd.DataFrame, vintage_issues: pd.DataFrame) -
         (vintage_issues if (vintage_issues is not None and not vintage_issues.empty)
          else pd.DataFrame({'note':['No vintage-level issues']})).to_excel(xw, index=False, sheet_name='Vintage issues')
     return out.getvalue()
+
+def export_consistency_excel(summary_df: pd.DataFrame,
+                             chart_wide: pd.DataFrame,
+                             gran_key: str) -> bytes:
+    """Excel workbook with three sheets for table-vs-chart consistency check.
+
+    Sheet 1 – Table Summary: the vintage default summary (Cum_PD, etc.)
+    Sheet 2 – Chart Data: full chart series for every vintage
+    Sheet 3 – Comparison: side-by-side Cum_PD from the table vs the endpoint
+              of each vintage series in the chart
+    """
+    out = BytesIO()
+    period_col = chart_wide.index.name or gran_key
+
+    with pd.ExcelWriter(out, engine='xlsxwriter') as xw:
+        # Sheet 1 — Table summary
+        tbl = summary_df.copy()
+        tbl['Cum PD (%)'] = tbl['Cum_PD'] * 100
+        tbl['Annualized default rate (%)'] = tbl['Default_rate_pa'] * 100
+        tbl.to_excel(xw, index=False, sheet_name='Table Summary')
+
+        # Sheet 2 — Chart data (periods in rows, vintages in columns)
+        chart_exp = chart_wide.reset_index()
+        if gran_key == 'QOB':
+            chart_exp.insert(0, 'Months', chart_exp[period_col] * 3)
+        chart_exp.to_excel(xw, index=False, sheet_name='Chart Data')
+
+        # Sheet 3 — Comparison: table Cum_PD vs chart endpoint per vintage
+        rows = []
+        for _, r in summary_df.iterrows():
+            v = r['Vintage']
+            table_cum_pd = r['Cum_PD']
+            if v in chart_wide.columns:
+                series = chart_wide[v].dropna()
+                chart_endpoint = series.iloc[-1] if len(series) > 0 else None
+                last_period = int(series.index[-1]) if len(series) > 0 else None
+            else:
+                chart_endpoint = None
+                last_period = None
+            diff = (chart_endpoint - table_cum_pd) if chart_endpoint is not None else None
+            rows.append({
+                'Vintage': v,
+                'Unique loans': r['Unique_loans'],
+                'Defaulted loans': r['Defaulted_loans'],
+                'Table Cum PD': table_cum_pd,
+                'Table Cum PD (%)': table_cum_pd * 100,
+                f'Chart Endpoint ({gran_key})': last_period,
+                'Chart Endpoint PD': chart_endpoint,
+                'Chart Endpoint PD (%)': chart_endpoint * 100 if chart_endpoint is not None else None,
+                'Difference (abs)': diff,
+                'Match': 'Yes' if diff is not None and abs(diff) < 1e-6 else 'No',
+            })
+        comp_df = pd.DataFrame(rows)
+        comp_df.to_excel(xw, index=False, sheet_name='Comparison')
+
+        # Format the Comparison sheet
+        wb = xw.book
+        ws = xw.sheets['Comparison']
+        pct_fmt = wb.add_format({'num_format': '0.00%'})
+        pct_cols = ['Table Cum PD', 'Chart Endpoint PD', 'Difference (abs)']
+        for col_name in pct_cols:
+            if col_name in comp_df.columns:
+                col_idx = comp_df.columns.get_loc(col_name)
+                ws.set_column(col_idx, col_idx, 14, pct_fmt)
+
+    return out.getvalue()
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Vintage default summary (Cum_PD, Obs_Time, annualized rate)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -2110,6 +2228,21 @@ with right:
                                     'text/csv',
                                     use_container_width=True
                                 )
+                            with exp_col2:
+                                try:
+                                    _summary = compute_vintage_default_summary(
+                                        chosen_df_raw, dpd_threshold=dpd_threshold)
+                                    xlsx_bytes = export_consistency_excel(
+                                        _summary, df_plot, gran_key)
+                                    st.download_button(
+                                        '📋 Consistency Check (Excel)',
+                                        xlsx_bytes,
+                                        'table_vs_chart_consistency.xlsx',
+                                        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                                        use_container_width=True
+                                    )
+                                except Exception:
+                                    pass
 
                 except Exception as e:
                     st.error(f'❌ Chart generation failed: {e}')
