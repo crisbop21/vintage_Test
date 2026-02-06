@@ -975,7 +975,15 @@ def plot_curves_percent_with_months(df_wide: pd.DataFrame,
                                     palette: str = "Gradient",
                                     base_color: Optional[str] = None,
                                     line_width: int = 1,
-                                    cohort_sizes: Optional[dict] = None):
+                                    cohort_sizes: Optional[dict] = None,
+                                    line_style: str = "solid",
+                                    show_markers: bool = False,
+                                    chart_height: int = 550,
+                                    title_font_size: int = 18,
+                                    axis_font_size: int = 13,
+                                    show_grid: bool = True,
+                                    y_axis_max: float = 0.0,
+                                    bg_color: str = "#FFFFFF"):
     if df_wide.empty:
         st.info('Not enough data to plot.')
         return None
@@ -1019,43 +1027,57 @@ def plot_curves_percent_with_months(df_wide: pd.DataFrame,
     else:
         palette_colors = palette_colors[:N]
 
+    trace_mode = 'lines+markers' if show_markers else 'lines'
+    marker_cfg = dict(size=4) if show_markers else None
+
     fig = go.Figure()
     show_leg = show_legend and (df_wide.shape[1] <= legend_limit)
     for i, col in enumerate(df_wide.columns):
         label = str(col)
         if cohort_sizes and col in cohort_sizes:
             label = f"{col} (n={int(cohort_sizes[col]):,})"
-        fig.add_trace(go.Scatter(
+        trace_kwargs = dict(
             x=x_months,
             y=Y[:, i],
-            mode='lines',
+            mode=trace_mode,
             name=label,
-            line=dict(color=palette_colors[i], width=line_width),
+            line=dict(color=palette_colors[i], width=line_width, dash=line_style),
             hovertemplate=f"Vintage: {col}<br>Month: %{{x}}<br>Default rate: %{{y:.2%}}<extra></extra>"
-        ))
+        )
+        if marker_cfg:
+            trace_kwargs['marker'] = marker_cfg
+        fig.add_trace(go.Scatter(**trace_kwargs))
+
+    grid_color = '#E2E8F0' if show_grid else 'rgba(0,0,0,0)'
+
+    yaxis_cfg = dict(
+        title=dict(text='Cumulative Default Rate', font=dict(size=axis_font_size, color='#64748B')),
+        tickformat='.2%',
+        tickfont=dict(size=11, color='#64748B'),
+        gridcolor=grid_color,
+        linecolor='#E2E8F0',
+        zeroline=False,
+        showgrid=show_grid,
+    )
+    if y_axis_max > 0:
+        yaxis_cfg['range'] = [0, y_axis_max / 100.0]
 
     fig.update_layout(
         title=dict(
             text=title,
-            font=dict(size=18, color='#002244', family='Inter, sans-serif'),
+            font=dict(size=title_font_size, color='#002244', family='Inter, sans-serif'),
             x=0.5,
             xanchor='center'
         ),
         xaxis=dict(
-            title=dict(text='Deal Age (months)', font=dict(size=13, color='#64748B')),
+            title=dict(text='Deal Age (months)', font=dict(size=axis_font_size, color='#64748B')),
             tickfont=dict(size=11, color='#64748B'),
-            gridcolor='#E2E8F0',
+            gridcolor=grid_color,
             linecolor='#E2E8F0',
             zeroline=False,
+            showgrid=show_grid,
         ),
-        yaxis=dict(
-            title=dict(text='Cumulative Default Rate', font=dict(size=13, color='#64748B')),
-            tickformat='.2%',
-            tickfont=dict(size=11, color='#64748B'),
-            gridcolor='#E2E8F0',
-            linecolor='#E2E8F0',
-            zeroline=False,
-        ),
+        yaxis=yaxis_cfg,
         hovermode='x unified',
         hoverlabel=dict(
             bgcolor='white',
@@ -1070,7 +1092,8 @@ def plot_curves_percent_with_months(df_wide: pd.DataFrame,
             font=dict(color='#002244', size=11, family='Inter, sans-serif'),
             title=dict(text='Vintage Cohorts', font=dict(size=12, color='#64748B')),
         ),
-        plot_bgcolor='white',
+        height=chart_height,
+        plot_bgcolor=bg_color,
         paper_bgcolor='white',
         margin=dict(l=60, r=30, t=60, b=50),
         font=dict(family='Inter, sans-serif'),
@@ -1766,8 +1789,11 @@ with right:
                 border: 1px solid {WB_BORDER};
                 margin-bottom: 24px;
             ">
-                <div style="font-size: 0.85rem; font-weight: 600; color: {WB_TEXT}; margin-bottom: 8px;">
+                <div style="font-size: 0.85rem; font-weight: 600; color: {WB_TEXT}; margin-bottom: 4px;">
                     🔍 Data Segmentation (Optional)
+                </div>
+                <div style="font-size: 0.78rem; color: {WB_MUTED};">
+                    Apply up to 3 filters to narrow down your data. Filters are applied sequentially (AND logic).
                 </div>
             </div>
             """,
@@ -1776,12 +1802,49 @@ with right:
 
         non_reserved = [c for c in chosen_df_raw.columns
                         if str(c).strip() not in RESERVED_COLS]
-        seg_col = st.selectbox('Filter by column', ['None'] + non_reserved, label_visibility="collapsed")
-        if seg_col != 'None':
-            unique_vals = chosen_df_raw[seg_col].dropna().unique().tolist()
-            selected_vals = st.multiselect(f'Select values for {seg_col}', unique_vals, default=unique_vals)
-            if selected_vals:
-                chosen_df_raw = chosen_df_raw[chosen_df_raw[seg_col].isin(selected_vals)]
+
+        # Initialise filter count in session state
+        if 'num_filters' not in st.session_state:
+            st.session_state['num_filters'] = 1
+
+        # Controls to add / remove filters
+        fctrl_cols = st.columns([1, 1, 3])
+        with fctrl_cols[0]:
+            if st.button('➕ Add filter', disabled=st.session_state['num_filters'] >= 3,
+                         use_container_width=True):
+                st.session_state['num_filters'] = min(3, st.session_state['num_filters'] + 1)
+                st.rerun()
+        with fctrl_cols[1]:
+            if st.button('➖ Remove filter', disabled=st.session_state['num_filters'] <= 1,
+                         use_container_width=True):
+                st.session_state['num_filters'] = max(1, st.session_state['num_filters'] - 1)
+                st.rerun()
+
+        active_filter_cols = []  # track columns already used
+        for filt_idx in range(st.session_state['num_filters']):
+            available_cols = [c for c in non_reserved if c not in active_filter_cols]
+            seg_col = st.selectbox(
+                f'Filter {filt_idx + 1} — column',
+                ['None'] + available_cols,
+                key=f'seg_col_{filt_idx}',
+            )
+            if seg_col != 'None':
+                active_filter_cols.append(seg_col)
+                unique_vals = sorted(
+                    [v for v in chosen_df_raw[seg_col].dropna().unique().tolist()],
+                    key=lambda x: str(x)
+                )
+                selected_vals = st.multiselect(
+                    f'Values for {seg_col}',
+                    unique_vals,
+                    default=unique_vals,
+                    key=f'seg_vals_{filt_idx}',
+                )
+                if selected_vals:
+                    chosen_df_raw = chosen_df_raw[chosen_df_raw[seg_col].isin(selected_vals)]
+            if filt_idx < st.session_state['num_filters'] - 1:
+                st.markdown(f"<hr style='margin:4px 0; border-color:{WB_BORDER};'>",
+                            unsafe_allow_html=True)
 
         # Tabs with icons
         tab_integrity, tab_tables, tab_charts = st.tabs([
@@ -2133,6 +2196,33 @@ with right:
                     help='Used when Gradient palette is selected.'
                 )
                 line_width = st.slider('✏️ Line width', min_value=1, max_value=5, value=2)
+                line_style = st.selectbox(
+                    '〰️ Line style',
+                    ['solid', 'dash', 'dot', 'dashdot'],
+                    index=0,
+                )
+                show_markers = st.checkbox('🔘 Show data-point markers', value=False)
+
+                st.markdown("---")
+                st.markdown("**Layout & Axes**")
+                chart_title = st.text_input(
+                    '📝 Custom chart title',
+                    value='',
+                    help='Leave blank to use the auto-generated title.',
+                )
+                chart_height = st.slider('📐 Chart height (px)', min_value=350, max_value=900, value=550, step=50)
+                title_font_size = st.slider('🔤 Title font size', min_value=12, max_value=28, value=18, step=1)
+                axis_font_size = st.slider('🔡 Axis label size', min_value=9, max_value=18, value=13, step=1)
+                show_grid = st.checkbox('🔲 Show gridlines', value=True)
+                y_axis_max = st.number_input(
+                    '📊 Y-axis max (%)',
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=0.0,
+                    step=1.0,
+                    help='Set to 0 for auto-scale.',
+                )
+                bg_color = st.color_picker('🎨 Plot background', value='#FFFFFF')
 
             with col_chart:
                 try:
@@ -2191,8 +2281,8 @@ with right:
                         else:
                             df_plot = df_plot_any[selected_vintages]
                             prog_bar.progress(0.9, text="Rendering visualization...")
-                            ttl = f'Vintage Default-Rate Evolution | DPD ≥ {dpd_threshold}'
-                            if cure_adjusted:
+                            ttl = chart_title.strip() if chart_title.strip() else f'Vintage Default-Rate Evolution | DPD ≥ {dpd_threshold}'
+                            if not chart_title.strip() and cure_adjusted:
                                 ttl += ' | Cure-Adjusted'
                             fig = plot_curves_percent_with_months(
                                 df_wide=df_plot,
@@ -2203,6 +2293,14 @@ with right:
                                 base_color=base_color,
                                 line_width=line_width,
                                 cohort_sizes=cohort_sizes,
+                                line_style=line_style,
+                                show_markers=show_markers,
+                                chart_height=chart_height,
+                                title_font_size=title_font_size,
+                                axis_font_size=axis_font_size,
+                                show_grid=show_grid,
+                                y_axis_max=y_axis_max,
+                                bg_color=bg_color,
                             )
                             prog_bar.progress(1.0, text="✅ Chart ready")
 
