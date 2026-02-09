@@ -1498,7 +1498,7 @@ def export_integrity_pdf(summary: dict, dataset_label: str = 'Full dataset',
         _draw_rule(ax, y + 0.008, color=C_PRIMARY, lw=1.0)
         ax.text(MARGIN_L, y - 0.005, title.upper(), ha='left', va='top',
                 fontsize=12, weight='bold', color=C_PRIMARY,
-                fontfamily='sans-serif', letterspacing=0.08)
+                fontfamily='sans-serif')
         return y - 0.035
 
     with PdfPages(buf) as pdf:
@@ -1512,7 +1512,7 @@ def export_integrity_pdf(summary: dict, dataset_label: str = 'Full dataset',
 
         ax.text(0.5, 0.955, 'DATA INTEGRITY REPORT', ha='center', va='top',
                 fontsize=24, weight='bold', color='white',
-                fontfamily='sans-serif', letterspacing=0.12)
+                fontfamily='sans-serif')
         ax.text(0.5, 0.915, 'Vintage Default-Rate Analytics', ha='center',
                 va='top', fontsize=13, color='#93C5FD', fontfamily='sans-serif')
 
