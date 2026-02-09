@@ -1624,6 +1624,77 @@ def compute_vintage_default_summary(raw_df: pd.DataFrame, dpd_threshold: int,
     return out.sort_values('Vintage').reset_index(drop=True)
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Segment-based PD summary (group by any non-reserved column)
+# ──────────────────────────────────────────────────────────────────────────────
+def compute_segment_default_summary(raw_df: pd.DataFrame, dpd_threshold: int,
+                                    segment_col: str,
+                                    pd_by_amount: bool = False) -> pd.DataFrame:
+    """Compute PD metrics grouped by values of *segment_col* instead of Vintage."""
+    dfn = normalize_columns(raw_df); dfn = ensure_types(dfn); dfn = add_vintage_mob(dfn)
+
+    # Preserve original segment values per loan (use the value from the first observation)
+    if segment_col not in dfn.columns:
+        raise KeyError(f"Column '{segment_col}' not found in the data after normalisation.")
+
+    dfn = dfn.sort_values(['Loan ID', 'Observation date'])
+    dfn['__def'] = (dfn['Days past due'] >= dpd_threshold)
+
+    g = dfn.groupby('Loan ID', sort=False)
+    first_obs      = g['Observation date'].min()
+    last_obs       = g['Observation date'].max()
+    first_segment  = g[segment_col].first()
+    first_def_date = (dfn.loc[dfn['__def']]
+                        .groupby('Loan ID', sort=False)['Observation date']
+                        .min())
+
+    loan_df = pd.DataFrame({
+        'Segment': first_segment,
+        'first_obs': first_obs,
+        'last_obs': last_obs,
+    })
+    loan_df['def_date']  = first_def_date
+    loan_df['defaulted'] = loan_df['def_date'].notna()
+    loan_df['obs_end']   = loan_df['def_date'].fillna(loan_df['last_obs'])
+
+    obs_days = (loan_df['obs_end'] - loan_df['first_obs']).dt.days
+    loan_df['Obs_Time_years'] = (obs_days / 365.25).astype('float32')
+    loan_df.loc[loan_df['Obs_Time_years'] <= 0, 'Obs_Time_years'] = np.nan
+
+    if pd_by_amount:
+        loan_orig_amt = g['Origination amount'].first()
+        loan_df['Origination_amount'] = loan_orig_amt
+
+        def_rows = dfn.loc[dfn['__def']].copy()
+        first_def_rows = (def_rows.sort_values('Observation date')
+                          .drop_duplicates(subset='Loan ID', keep='first'))
+        first_def_cur_amt = first_def_rows.set_index('Loan ID')['Current amount']
+        loan_df['Default_current_amount'] = first_def_cur_amt
+        loan_df.loc[~loan_df['defaulted'], 'Default_current_amount'] = 0.0
+
+        out = (loan_df.groupby('Segment', as_index=False)
+               .agg(Unique_loans=('Segment', 'size'),
+                    Defaulted_loans=('defaulted', 'sum'),
+                    Total_Origination_Amount=('Origination_amount', 'sum'),
+                    Total_Default_Amount=('Default_current_amount', 'sum'),
+                    Observation_Time=('Obs_Time_years', 'median')))
+        out['Cum_PD'] = np.where(
+            out['Total_Origination_Amount'] > 0,
+            out['Total_Default_Amount'] / out['Total_Origination_Amount'],
+            0.0
+        ).astype('float32')
+    else:
+        out = (loan_df.groupby('Segment', as_index=False)
+               .agg(Unique_loans=('Segment', 'size'),
+                    Defaulted_loans=('defaulted', 'sum'),
+                    Cum_PD=('defaulted', 'mean'),
+                    Observation_Time=('Obs_Time_years', 'median')))
+
+    m = out['Observation_Time'] > 0
+    out['Default_rate_pa'] = np.nan
+    out.loc[m, 'Default_rate_pa'] = 1 - np.power(1 - out.loc[m, 'Cum_PD'], 1 / out.loc[m, 'Observation_Time'])
+    return out.sort_values('Segment').reset_index(drop=True)
+
+# ──────────────────────────────────────────────────────────────────────────────
 # UI - SIDEBAR
 # ──────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -2048,190 +2119,406 @@ with right:
         # TABLES TAB
         # ════════════════════════════════════════════════════════════════════
         with tab_tables:
-            st.markdown(
-                f"""
-                <div style="
-                    background: linear-gradient(135deg, {WB_LIGHT} 0%, white 100%);
-                    border-radius: 16px;
-                    padding: 24px;
-                    border: 1px solid {WB_BORDER};
-                    margin-bottom: 24px;
-                ">
-                    <h3 style="margin: 0 0 8px 0; color: {WB_TEXT};">Vintage Performance Summary</h3>
-                    <p style="margin: 0; color: {WB_MUTED}; font-size: 0.9rem;">
-                        Comprehensive breakdown of loan performance metrics by vintage cohort, including cumulative default rates and annualized statistics.
-                    </p>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
+            subtab_vintage, subtab_segment = st.tabs([
+                "📊 Vintage Analysis",
+                "🔎 PD Segmentation Analysis",
+            ])
 
-            pd_calc_method_table = st.selectbox(
-                '📐 PD Calculation Method',
-                ['By Loan Count', 'By Amount (Current / Origination)'],
-                index=0,
-                help='By Loan Count: defaulted loans / total loans. '
-                     'By Amount: sum of Current Amount at default date / sum of Origination Amount.',
-                key='pd_calc_method_table',
-            )
-            pd_by_amount_table = pd_calc_method_table == 'By Amount (Current / Origination)'
-
-            try:
-                summary_df = compute_vintage_default_summary(
-                    chosen_df_raw, dpd_threshold=dpd_threshold,
-                    pd_by_amount=pd_by_amount_table)
-
-                # Key metrics cards
-                total_loans = summary_df['Unique_loans'].sum()
-                total_defaults = summary_df['Defaulted_loans'].sum()
-                if pd_by_amount_table:
-                    total_orig_amt = summary_df['Total_Origination_Amount'].sum()
-                    total_def_amt = summary_df['Total_Default_Amount'].sum()
-                    avg_pd = (total_def_amt / total_orig_amt * 100) if total_orig_amt > 0 else 0
-                else:
-                    avg_pd = (total_defaults / total_loans * 100) if total_loans > 0 else 0
-
+            # ── Sub-tab: Vintage Analysis (original) ──────────────────────
+            with subtab_vintage:
                 st.markdown(
                     f"""
                     <div style="
-                        display: grid;
-                        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-                        gap: 16px;
+                        background: linear-gradient(135deg, {WB_LIGHT} 0%, white 100%);
+                        border-radius: 16px;
+                        padding: 24px;
+                        border: 1px solid {WB_BORDER};
                         margin-bottom: 24px;
                     ">
-                        <div style="
-                            background: white;
-                            border-radius: 12px;
-                            padding: 20px;
-                            border: 1px solid {WB_BORDER};
-                            text-align: center;
-                        ">
-                            <div style="color: {WB_MUTED}; font-size: 0.75rem; text-transform: uppercase;">Total Loans</div>
-                            <div style="color: {WB_TEXT}; font-size: 1.5rem; font-weight: 700;">{total_loans:,}</div>
-                        </div>
-                        <div style="
-                            background: white;
-                            border-radius: 12px;
-                            padding: 20px;
-                            border: 1px solid {WB_BORDER};
-                            text-align: center;
-                        ">
-                            <div style="color: {WB_MUTED}; font-size: 0.75rem; text-transform: uppercase;">Total Defaults</div>
-                            <div style="color: #EF4444; font-size: 1.5rem; font-weight: 700;">{total_defaults:,}</div>
-                        </div>
-                        <div style="
-                            background: white;
-                            border-radius: 12px;
-                            padding: 20px;
-                            border: 1px solid {WB_BORDER};
-                            text-align: center;
-                        ">
-                            <div style="color: {WB_MUTED}; font-size: 0.75rem; text-transform: uppercase;">Avg Default Rate {'(by Amt)' if pd_by_amount_table else '(by Count)'}</div>
-                            <div style="color: {WB_PRIMARY}; font-size: 1.5rem; font-weight: 700;">{avg_pd:.2f}%</div>
-                        </div>
-                        <div style="
-                            background: white;
-                            border-radius: 12px;
-                            padding: 20px;
-                            border: 1px solid {WB_BORDER};
-                            text-align: center;
-                        ">
-                            <div style="color: {WB_MUTED}; font-size: 0.75rem; text-transform: uppercase;">Vintages</div>
-                            <div style="color: {WB_TEXT}; font-size: 1.5rem; font-weight: 700;">{len(summary_df)}</div>
-                        </div>
+                        <h3 style="margin: 0 0 8px 0; color: {WB_TEXT};">Vintage Performance Summary</h3>
+                        <p style="margin: 0; color: {WB_MUTED}; font-size: 0.9rem;">
+                            Comprehensive breakdown of loan performance metrics by vintage cohort, including cumulative default rates and annualized statistics.
+                        </p>
                     </div>
                     """,
                     unsafe_allow_html=True
                 )
 
+                pd_calc_method_table = st.selectbox(
+                    '📐 PD Calculation Method',
+                    ['By Loan Count', 'By Amount (Current / Origination)'],
+                    index=0,
+                    help='By Loan Count: defaulted loans / total loans. '
+                         'By Amount: sum of Current Amount at default date / sum of Origination Amount.',
+                    key='pd_calc_method_table',
+                )
+                pd_by_amount_table = pd_calc_method_table == 'By Amount (Current / Origination)'
+
+                try:
+                    summary_df = compute_vintage_default_summary(
+                        chosen_df_raw, dpd_threshold=dpd_threshold,
+                        pd_by_amount=pd_by_amount_table)
+
+                    # Key metrics cards
+                    total_loans = summary_df['Unique_loans'].sum()
+                    total_defaults = summary_df['Defaulted_loans'].sum()
+                    if pd_by_amount_table:
+                        total_orig_amt = summary_df['Total_Origination_Amount'].sum()
+                        total_def_amt = summary_df['Total_Default_Amount'].sum()
+                        avg_pd = (total_def_amt / total_orig_amt * 100) if total_orig_amt > 0 else 0
+                    else:
+                        avg_pd = (total_defaults / total_loans * 100) if total_loans > 0 else 0
+
+                    st.markdown(
+                        f"""
+                        <div style="
+                            display: grid;
+                            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+                            gap: 16px;
+                            margin-bottom: 24px;
+                        ">
+                            <div style="
+                                background: white;
+                                border-radius: 12px;
+                                padding: 20px;
+                                border: 1px solid {WB_BORDER};
+                                text-align: center;
+                            ">
+                                <div style="color: {WB_MUTED}; font-size: 0.75rem; text-transform: uppercase;">Total Loans</div>
+                                <div style="color: {WB_TEXT}; font-size: 1.5rem; font-weight: 700;">{total_loans:,}</div>
+                            </div>
+                            <div style="
+                                background: white;
+                                border-radius: 12px;
+                                padding: 20px;
+                                border: 1px solid {WB_BORDER};
+                                text-align: center;
+                            ">
+                                <div style="color: {WB_MUTED}; font-size: 0.75rem; text-transform: uppercase;">Total Defaults</div>
+                                <div style="color: #EF4444; font-size: 1.5rem; font-weight: 700;">{total_defaults:,}</div>
+                            </div>
+                            <div style="
+                                background: white;
+                                border-radius: 12px;
+                                padding: 20px;
+                                border: 1px solid {WB_BORDER};
+                                text-align: center;
+                            ">
+                                <div style="color: {WB_MUTED}; font-size: 0.75rem; text-transform: uppercase;">Avg Default Rate {'(by Amt)' if pd_by_amount_table else '(by Count)'}</div>
+                                <div style="color: {WB_PRIMARY}; font-size: 1.5rem; font-weight: 700;">{avg_pd:.2f}%</div>
+                            </div>
+                            <div style="
+                                background: white;
+                                border-radius: 12px;
+                                padding: 20px;
+                                border: 1px solid {WB_BORDER};
+                                text-align: center;
+                            ">
+                                <div style="color: {WB_MUTED}; font-size: 0.75rem; text-transform: uppercase;">Vintages</div>
+                                <div style="color: {WB_TEXT}; font-size: 1.5rem; font-weight: 700;">{len(summary_df)}</div>
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+
+                    st.markdown(
+                        f"""
+                        <div style="
+                            background: white;
+                            border-radius: 12px;
+                            padding: 16px 20px;
+                            border: 1px solid {WB_BORDER};
+                            margin-bottom: 16px;
+                        ">
+                            <div style="font-size: 0.9rem; font-weight: 600; color: {WB_TEXT};">📊 Vintage Default Summary Table {'(by Amount)' if pd_by_amount_table else '(by Loan Count)'}</div>
+                            <div style="font-size: 0.8rem; color: {WB_MUTED};">
+                                {'Cum PD = Σ Current Amount at default / Σ Origination Amount. ' if pd_by_amount_table else ''}Observation Time = default date − first observation (if defaulted), else last observation − first observation (in years)
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+
+                    # Rename only for display
+                    rename_map = {
+                        "Unique_loans": "Unique loans",
+                        "Defaulted_loans": "Defaulted loans",
+                        "Observation_Time": "Obs Time (years)",
+                        "Default_rate_pa": "Annualized default rate",
+                        "Cum_PD": "Cum PD",
+                    }
+                    if pd_by_amount_table:
+                        rename_map["Total_Origination_Amount"] = "Total Origination Amt"
+                        rename_map["Total_Default_Amount"] = "Default Amt (Current)"
+                    disp = summary_df.rename(columns=rename_map)
+                    disp["Cum PD (%)"] = disp["Cum PD"] * 100
+                    disp["Annualized default rate (%)"] = disp["Annualized default rate"] * 100
+
+                    if pd_by_amount_table:
+                        table = disp[[
+                            "Vintage",
+                            "Unique loans",
+                            "Defaulted loans",
+                            "Total Origination Amt",
+                            "Default Amt (Current)",
+                            "Cum PD (%)",
+                            "Obs Time (years)",
+                            "Annualized default rate (%)",
+                        ]]
+                        styles = {
+                            "Unique loans": "{:,.0f}" if pretty_ints else "{:.0f}",
+                            "Defaulted loans": "{:,.0f}" if pretty_ints else "{:.0f}",
+                            "Total Origination Amt": "{:,.2f}" if pretty_ints else "{:.2f}",
+                            "Default Amt (Current)": "{:,.2f}" if pretty_ints else "{:.2f}",
+                            "Cum PD (%)": "{:.2f}",
+                            "Obs Time (years)": "{:.2f}",
+                            "Annualized default rate (%)": "{:.2f}",
+                        }
+                    else:
+                        table = disp[[
+                            "Vintage",
+                            "Unique loans",
+                            "Defaulted loans",
+                            "Cum PD (%)",
+                            "Obs Time (years)",
+                            "Annualized default rate (%)",
+                        ]]
+                        styles = {
+                            "Unique loans": "{:,.0f}" if pretty_ints else "{:.0f}",
+                            "Defaulted loans": "{:,.0f}" if pretty_ints else "{:.0f}",
+                            "Cum PD (%)": "{:.2f}",
+                            "Obs Time (years)": "{:.2f}",
+                            "Annualized default rate (%)": "{:.2f}",
+                        }
+                    styler = (
+                        table.style
+                        .format(styles)
+                        .background_gradient(subset=["Cum PD (%)", "Annualized default rate (%)"], cmap="Blues")
+                        .hide(axis="index")
+                    )
+
+                    st.dataframe(styler, use_container_width=True, height=400)
+
+                    st.markdown("#### 📥 Export Data")
+                    st.download_button(
+                        '📊 Download CSV',
+                        summary_df.to_csv(index=False).encode('utf-8'),
+                        'vintage_default_summary.csv',
+                        'text/csv',
+                        use_container_width=False
+                    )
+                except Exception as e:
+                    st.error(f'❌ Could not compute vintage default summary: {e}')
+
+            # ── Sub-tab: PD Segmentation Analysis ─────────────────────────
+            with subtab_segment:
                 st.markdown(
                     f"""
                     <div style="
-                        background: white;
-                        border-radius: 12px;
-                        padding: 16px 20px;
+                        background: linear-gradient(135deg, {WB_LIGHT} 0%, white 100%);
+                        border-radius: 16px;
+                        padding: 24px;
                         border: 1px solid {WB_BORDER};
-                        margin-bottom: 16px;
+                        margin-bottom: 24px;
                     ">
-                        <div style="font-size: 0.9rem; font-weight: 600; color: {WB_TEXT};">📊 Vintage Default Summary Table {'(by Amount)' if pd_by_amount_table else '(by Loan Count)'}</div>
-                        <div style="font-size: 0.8rem; color: {WB_MUTED};">
-                            {'Cum PD = Σ Current Amount at default / Σ Origination Amount. ' if pd_by_amount_table else ''}Observation Time = default date − first observation (if defaulted), else last observation − first observation (in years)
-                        </div>
+                        <h3 style="margin: 0 0 8px 0; color: {WB_TEXT};">PD Segmentation Analysis</h3>
+                        <p style="margin: 0; color: {WB_MUTED}; font-size: 0.9rem;">
+                            Analyse default rates grouped by any data attribute (e.g. Tenor, Product, Region).
+                            Each row represents a distinct segment value instead of a vintage cohort.
+                        </p>
                     </div>
                     """,
                     unsafe_allow_html=True
                 )
 
-                # Rename only for display
-                rename_map = {
-                    "Unique_loans": "Unique loans",
-                    "Defaulted_loans": "Defaulted loans",
-                    "Observation_Time": "Obs Time (years)",
-                    "Default_rate_pa": "Annualized default rate",
-                    "Cum_PD": "Cum PD",
-                }
-                if pd_by_amount_table:
-                    rename_map["Total_Origination_Amount"] = "Total Origination Amt"
-                    rename_map["Total_Default_Amount"] = "Default Amt (Current)"
-                disp = summary_df.rename(columns=rename_map)
-                disp["Cum PD (%)"] = disp["Cum PD"] * 100
-                disp["Annualized default rate (%)"] = disp["Annualized default rate"] * 100
+                seg_non_reserved = [c for c in chosen_df_raw.columns
+                                    if str(c).strip() not in RESERVED_COLS]
 
-                if pd_by_amount_table:
-                    table = disp[[
-                        "Vintage",
-                        "Unique loans",
-                        "Defaulted loans",
-                        "Total Origination Amt",
-                        "Default Amt (Current)",
-                        "Cum PD (%)",
-                        "Obs Time (years)",
-                        "Annualized default rate (%)",
-                    ]]
-                    styles = {
-                        "Unique loans": "{:,.0f}" if pretty_ints else "{:.0f}",
-                        "Defaulted loans": "{:,.0f}" if pretty_ints else "{:.0f}",
-                        "Total Origination Amt": "{:,.2f}" if pretty_ints else "{:.2f}",
-                        "Default Amt (Current)": "{:,.2f}" if pretty_ints else "{:.2f}",
-                        "Cum PD (%)": "{:.2f}",
-                        "Obs Time (years)": "{:.2f}",
-                        "Annualized default rate (%)": "{:.2f}",
-                    }
+                if not seg_non_reserved:
+                    st.warning('No non-reserved columns available for segmentation. '
+                               'Your dataset only contains the core loan columns.')
                 else:
-                    table = disp[[
-                        "Vintage",
-                        "Unique loans",
-                        "Defaulted loans",
-                        "Cum PD (%)",
-                        "Obs Time (years)",
-                        "Annualized default rate (%)",
-                    ]]
-                    styles = {
-                        "Unique loans": "{:,.0f}" if pretty_ints else "{:.0f}",
-                        "Defaulted loans": "{:,.0f}" if pretty_ints else "{:.0f}",
-                        "Cum PD (%)": "{:.2f}",
-                        "Obs Time (years)": "{:.2f}",
-                        "Annualized default rate (%)": "{:.2f}",
-                    }
-                styler = (
-                    table.style
-                    .format(styles)
-                    .background_gradient(subset=["Cum PD (%)", "Annualized default rate (%)"], cmap="Blues")
-                    .hide(axis="index")
-                )
+                    seg_col_choice = st.selectbox(
+                        '🏷️ Segmentation Column',
+                        seg_non_reserved,
+                        index=0,
+                        help='Choose the column whose distinct values will become the rows of the PD table.',
+                        key='seg_col_pd_analysis',
+                    )
 
-                st.dataframe(styler, use_container_width=True, height=400)
+                    pd_calc_method_seg = st.selectbox(
+                        '📐 PD Calculation Method',
+                        ['By Loan Count', 'By Amount (Current / Origination)'],
+                        index=0,
+                        help='By Loan Count: defaulted loans / total loans. '
+                             'By Amount: sum of Current Amount at default date / sum of Origination Amount.',
+                        key='pd_calc_method_seg',
+                    )
+                    pd_by_amount_seg = pd_calc_method_seg == 'By Amount (Current / Origination)'
 
-                st.markdown("#### 📥 Export Data")
-                st.download_button(
-                    '📊 Download CSV',
-                    summary_df.to_csv(index=False).encode('utf-8'),
-                    'vintage_default_summary.csv',
-                    'text/csv',
-                    use_container_width=False
-                )
-            except Exception as e:
-                st.error(f'❌ Could not compute vintage default summary: {e}')
+                    try:
+                        seg_summary_df = compute_segment_default_summary(
+                            chosen_df_raw,
+                            dpd_threshold=dpd_threshold,
+                            segment_col=seg_col_choice,
+                            pd_by_amount=pd_by_amount_seg,
+                        )
+
+                        # Key metrics cards
+                        seg_total_loans = seg_summary_df['Unique_loans'].sum()
+                        seg_total_defaults = seg_summary_df['Defaulted_loans'].sum()
+                        if pd_by_amount_seg:
+                            seg_total_orig = seg_summary_df['Total_Origination_Amount'].sum()
+                            seg_total_def = seg_summary_df['Total_Default_Amount'].sum()
+                            seg_avg_pd = (seg_total_def / seg_total_orig * 100) if seg_total_orig > 0 else 0
+                        else:
+                            seg_avg_pd = (seg_total_defaults / seg_total_loans * 100) if seg_total_loans > 0 else 0
+
+                        st.markdown(
+                            f"""
+                            <div style="
+                                display: grid;
+                                grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+                                gap: 16px;
+                                margin-bottom: 24px;
+                            ">
+                                <div style="
+                                    background: white;
+                                    border-radius: 12px;
+                                    padding: 20px;
+                                    border: 1px solid {WB_BORDER};
+                                    text-align: center;
+                                ">
+                                    <div style="color: {WB_MUTED}; font-size: 0.75rem; text-transform: uppercase;">Total Loans</div>
+                                    <div style="color: {WB_TEXT}; font-size: 1.5rem; font-weight: 700;">{seg_total_loans:,}</div>
+                                </div>
+                                <div style="
+                                    background: white;
+                                    border-radius: 12px;
+                                    padding: 20px;
+                                    border: 1px solid {WB_BORDER};
+                                    text-align: center;
+                                ">
+                                    <div style="color: {WB_MUTED}; font-size: 0.75rem; text-transform: uppercase;">Total Defaults</div>
+                                    <div style="color: #EF4444; font-size: 1.5rem; font-weight: 700;">{seg_total_defaults:,}</div>
+                                </div>
+                                <div style="
+                                    background: white;
+                                    border-radius: 12px;
+                                    padding: 20px;
+                                    border: 1px solid {WB_BORDER};
+                                    text-align: center;
+                                ">
+                                    <div style="color: {WB_MUTED}; font-size: 0.75rem; text-transform: uppercase;">Avg Default Rate {'(by Amt)' if pd_by_amount_seg else '(by Count)'}</div>
+                                    <div style="color: {WB_PRIMARY}; font-size: 1.5rem; font-weight: 700;">{seg_avg_pd:.2f}%</div>
+                                </div>
+                                <div style="
+                                    background: white;
+                                    border-radius: 12px;
+                                    padding: 20px;
+                                    border: 1px solid {WB_BORDER};
+                                    text-align: center;
+                                ">
+                                    <div style="color: {WB_MUTED}; font-size: 0.75rem; text-transform: uppercase;">Segments</div>
+                                    <div style="color: {WB_TEXT}; font-size: 1.5rem; font-weight: 700;">{len(seg_summary_df)}</div>
+                                </div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
+
+                        st.markdown(
+                            f"""
+                            <div style="
+                                background: white;
+                                border-radius: 12px;
+                                padding: 16px 20px;
+                                border: 1px solid {WB_BORDER};
+                                margin-bottom: 16px;
+                            ">
+                                <div style="font-size: 0.9rem; font-weight: 600; color: {WB_TEXT};">🔎 PD by {seg_col_choice} {'(by Amount)' if pd_by_amount_seg else '(by Loan Count)'}</div>
+                                <div style="font-size: 0.8rem; color: {WB_MUTED};">
+                                    {'Cum PD = Σ Current Amount at default / Σ Origination Amount. ' if pd_by_amount_seg else ''}Observation Time = default date − first observation (if defaulted), else last observation − first observation (in years)
+                                </div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
+
+                        # Rename for display
+                        seg_rename = {
+                            "Segment": seg_col_choice,
+                            "Unique_loans": "Unique loans",
+                            "Defaulted_loans": "Defaulted loans",
+                            "Observation_Time": "Obs Time (years)",
+                            "Default_rate_pa": "Annualized default rate",
+                            "Cum_PD": "Cum PD",
+                        }
+                        if pd_by_amount_seg:
+                            seg_rename["Total_Origination_Amount"] = "Total Origination Amt"
+                            seg_rename["Total_Default_Amount"] = "Default Amt (Current)"
+                        seg_disp = seg_summary_df.rename(columns=seg_rename)
+                        seg_disp["Cum PD (%)"] = seg_disp["Cum PD"] * 100
+                        seg_disp["Annualized default rate (%)"] = seg_disp["Annualized default rate"] * 100
+
+                        if pd_by_amount_seg:
+                            seg_table = seg_disp[[
+                                seg_col_choice,
+                                "Unique loans",
+                                "Defaulted loans",
+                                "Total Origination Amt",
+                                "Default Amt (Current)",
+                                "Cum PD (%)",
+                                "Obs Time (years)",
+                                "Annualized default rate (%)",
+                            ]]
+                            seg_styles = {
+                                "Unique loans": "{:,.0f}" if pretty_ints else "{:.0f}",
+                                "Defaulted loans": "{:,.0f}" if pretty_ints else "{:.0f}",
+                                "Total Origination Amt": "{:,.2f}" if pretty_ints else "{:.2f}",
+                                "Default Amt (Current)": "{:,.2f}" if pretty_ints else "{:.2f}",
+                                "Cum PD (%)": "{:.2f}",
+                                "Obs Time (years)": "{:.2f}",
+                                "Annualized default rate (%)": "{:.2f}",
+                            }
+                        else:
+                            seg_table = seg_disp[[
+                                seg_col_choice,
+                                "Unique loans",
+                                "Defaulted loans",
+                                "Cum PD (%)",
+                                "Obs Time (years)",
+                                "Annualized default rate (%)",
+                            ]]
+                            seg_styles = {
+                                "Unique loans": "{:,.0f}" if pretty_ints else "{:.0f}",
+                                "Defaulted loans": "{:,.0f}" if pretty_ints else "{:.0f}",
+                                "Cum PD (%)": "{:.2f}",
+                                "Obs Time (years)": "{:.2f}",
+                                "Annualized default rate (%)": "{:.2f}",
+                            }
+
+                        seg_styler = (
+                            seg_table.style
+                            .format(seg_styles)
+                            .background_gradient(subset=["Cum PD (%)", "Annualized default rate (%)"], cmap="Blues")
+                            .hide(axis="index")
+                        )
+
+                        st.dataframe(seg_styler, use_container_width=True, height=400)
+
+                        st.markdown("#### 📥 Export Data")
+                        st.download_button(
+                            '📊 Download CSV',
+                            seg_summary_df.to_csv(index=False).encode('utf-8'),
+                            f'pd_by_{seg_col_choice}.csv',
+                            'text/csv',
+                            use_container_width=False,
+                            key='seg_csv_download',
+                        )
+                    except Exception as e:
+                        st.error(f'❌ Could not compute segment PD summary: {e}')
 
         # ════════════════════════════════════════════════════════════════════
         # CHARTS TAB
