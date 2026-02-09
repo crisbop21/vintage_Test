@@ -1414,36 +1414,92 @@ def explain_check(name: str) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 # Exports
 # ──────────────────────────────────────────────────────────────────────────────
-def export_integrity_pdf(summary: dict, dataset_label: str = 'Full dataset') -> bytes:
-    buf = BytesIO()
-    with PdfPages(buf) as pdf:
-        fig = plt.figure(figsize=(8.27, 11.69))  # A4 portrait
-        plt.axis('off')
+VINTAGE_ISSUE_TEEN_EXPLANATIONS = {
+    'Denominator increased with QOB': (
+        "Think of a vintage as a group of students who all started school the same year. "
+        "If you count 100 students in September, you'd expect the same 100 (or fewer, if "
+        "some leave) when you check back in December. But here, the number GREW — like "
+        "suddenly 105 students appeared. That's weird and usually means some students got "
+        "counted twice, or got put into the wrong class. In loan data, this means the count "
+        "of loans in this group went UP over time instead of staying the same or going down. "
+        "That should never happen and usually points to duplicate records sneaking in."
+    ),
+    'Low QOB1 coverage': (
+        "Imagine you're a teacher doing attendance on the first day of school, but you only "
+        "managed to check 70 out of 100 students. That's a problem — you're missing info on "
+        "30 students right from the start! In loan data, 'QOB1 coverage' means: of all the "
+        "loans that were born in a certain period, how many do we actually see in the very "
+        "first quarter of data? If it's below 80%, we're missing a big chunk of early data "
+        "for those loans, which makes our calculations less reliable."
+    ),
+    'Raw default rate not monotone (QOB)': (
+        "Picture a scoreboard that tracks how many players on a team have ever been injured. "
+        "Once a player gets injured, they stay on the 'ever injured' list forever — the count "
+        "can only go up or stay the same, never go down. The same idea applies to loan defaults: "
+        "once a loan is marked as 'defaulted' (the borrower stopped paying), it stays defaulted. "
+        "So the percentage of defaulted loans should only go up over time. If it goes DOWN, "
+        "something is wrong with the data — maybe some loans disappeared or the calculations "
+        "got mixed up."
+    ),
+}
 
-        y = 0.95
+def export_integrity_pdf(summary: dict, dataset_label: str = 'Full dataset',
+                         vintage_issues_df: pd.DataFrame = None) -> bytes:
+    import datetime
+
+    buf = BytesIO()
+    LINE_H = 0.025          # line height for normal text
+    LINE_H_SM = 0.022       # line height for smaller text
+    MARGIN_TOP = 0.93
+    MARGIN_BOT = 0.06
+    PAGE_W = 8.27
+    PAGE_H = 11.69
+
+    def _new_page(pdf_pages):
+        """Create a fresh A4 page and return (fig, y)."""
+        fig = plt.figure(figsize=(PAGE_W, PAGE_H))
+        plt.axis('off')
+        return fig, MARGIN_TOP
+
+    def _save_page(pdf_pages, fig):
+        pdf_pages.savefig(fig, bbox_inches='tight')
+        plt.close(fig)
+
+    def _need_space(pdf_pages, fig, y, needed, section_name=None):
+        """If not enough room, save current page and start a new one."""
+        if y - needed < MARGIN_BOT:
+            _save_page(pdf_pages, fig)
+            fig, y = _new_page(pdf_pages)
+            if section_name:
+                plt.text(0.5, 0.97, 'Data Integrity Report (cont.)', ha='center',
+                         va='top', fontsize=14, weight='bold', color='#1E3A8A')
+                y = MARGIN_TOP
+        return fig, y
+
+    with PdfPages(buf) as pdf:
+        # ── PAGE 1: Title + Analysis Summary ──────────────────────────
+        fig, y = _new_page(pdf)
 
         # Title
-        plt.text(0.5, y, 'Data Integrity Report', ha='center', va='top',
-                fontsize=22, weight='bold', color='#1E3A8A')
-        y -= 0.05
+        plt.text(0.5, 0.97, 'Data Integrity Report', ha='center', va='top',
+                 fontsize=22, weight='bold', color='#1E3A8A')
+        y = 0.92
 
         # Subtitle
         plt.text(0.5, y, 'Vintage Default-Rate Analytics', ha='center', va='top',
-                fontsize=14, color='#64748B')
+                 fontsize=14, color='#64748B')
         y -= 0.04
 
         # Dataset info
-        import datetime
         plt.text(0.5, y, f'Dataset: {dataset_label}  |  Generated: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M")}',
-                ha='center', va='top', fontsize=11, color='#002244')
+                 ha='center', va='top', fontsize=11, color='#002244')
         y -= 0.06
 
-        # Summary section header
+        # --- Analysis Summary ---
         plt.text(0.05, y, 'Analysis Summary', ha='left', va='top',
-                fontsize=16, weight='bold', color='#002244')
-        y -= 0.05
+                 fontsize=16, weight='bold', color='#002244')
+        y -= 0.04
 
-        # Build summary bullets
         bullets = []
         explanations = []
         for k, v in summary.items():
@@ -1454,35 +1510,115 @@ def export_integrity_pdf(summary: dict, dataset_label: str = 'Full dataset') -> 
             if desc:
                 explanations.append(f'  {k}: {desc}')
 
-        # Print summary items with larger font
-        wrapped = []
         for line in bullets:
-            wrapped.extend(textwrap.wrap(line, width=80))
-        for line in wrapped:
-            plt.text(0.05, y, line, ha='left', va='top', fontsize=11, color='#002244')
-            y -= 0.028
-            if y < 0.38:
-                break
+            for wrapped_line in textwrap.wrap(line, width=85):
+                fig, y = _need_space(pdf, fig, y, LINE_H)
+                plt.text(0.05, y, wrapped_line, ha='left', va='top',
+                         fontsize=10, color='#002244')
+                y -= LINE_H
 
         y -= 0.03
 
-        # Explanations section header
+        # --- Check Definitions ---
+        fig, y = _need_space(pdf, fig, y, 0.06, 'Check Definitions')
         plt.text(0.05, y, 'Check Definitions', ha='left', va='top',
-                fontsize=16, weight='bold', color='#002244')
-        y -= 0.05
+                 fontsize=16, weight='bold', color='#002244')
+        y -= 0.04
 
-        # Print explanations with readable font
-        wrapped_desc = []
         for line in explanations:
-            wrapped_desc.extend(textwrap.wrap(line, width=85))
-        for line in wrapped_desc:
-            plt.text(0.05, y, line, ha='left', va='top', fontsize=10, color='#1E3A8A')
-            y -= 0.025
-            if y < 0.05:
-                break
+            for wrapped_line in textwrap.wrap(line, width=90):
+                fig, y = _need_space(pdf, fig, y, LINE_H_SM)
+                plt.text(0.05, y, wrapped_line, ha='left', va='top',
+                         fontsize=9, color='#1E3A8A')
+                y -= LINE_H_SM
 
-        pdf.savefig(fig, bbox_inches='tight')
-        plt.close(fig)
+        # ── VINTAGE-LEVEL ISSUES SECTION ──────────────────────────────
+        y -= 0.04
+        fig, y = _need_space(pdf, fig, y, 0.14, 'Vintage-Level Issues')
+
+        plt.text(0.05, y, 'Vintage-Level Issues  —  Explained Simply', ha='left',
+                 va='top', fontsize=16, weight='bold', color='#002244')
+        y -= 0.04
+
+        # Brief intro for a teenager
+        intro = (
+            "What is a 'vintage'?  Imagine you sort all loans by the quarter they were "
+            "created — like sorting students by the year they started school.  Each of "
+            "those groups is called a vintage (for example, '2023Q1' means all loans that "
+            "started in Jan–Mar 2023).  The checks below look at each vintage to make sure "
+            "the numbers add up and nothing fishy is going on."
+        )
+        for wrapped_line in textwrap.wrap(intro, width=95):
+            fig, y = _need_space(pdf, fig, y, LINE_H)
+            plt.text(0.05, y, wrapped_line, ha='left', va='top',
+                     fontsize=10, style='italic', color='#64748B')
+            y -= LINE_H
+        y -= 0.02
+
+        has_vintage_issues = vintage_issues_df is not None and not vintage_issues_df.empty
+
+        if has_vintage_issues:
+            # Group issues by type for clear presentation
+            issue_types = vintage_issues_df['issue'].unique().tolist()
+
+            for issue_type in issue_types:
+                fig, y = _need_space(pdf, fig, y, 0.10, issue_type)
+
+                # Issue title
+                plt.text(0.05, y, f'Issue: {issue_type}', ha='left', va='top',
+                         fontsize=12, weight='bold', color='#B91C1C')
+                y -= 0.035
+
+                # Teen-friendly explanation
+                teen_text = VINTAGE_ISSUE_TEEN_EXPLANATIONS.get(issue_type, '')
+                if teen_text:
+                    for wrapped_line in textwrap.wrap(teen_text, width=95):
+                        fig, y = _need_space(pdf, fig, y, LINE_H)
+                        plt.text(0.07, y, wrapped_line, ha='left', va='top',
+                                 fontsize=9.5, color='#1E3A8A')
+                        y -= LINE_H
+                    y -= 0.015
+
+                # Show affected vintages / details
+                sub = vintage_issues_df[vintage_issues_df['issue'] == issue_type]
+                affected_vintages = sub['Vintage'].unique().tolist() if 'Vintage' in sub.columns else []
+                if affected_vintages:
+                    label = f'Affected vintages ({len(affected_vintages)}): '
+                    vlist = ', '.join(str(v) for v in affected_vintages[:20])
+                    if len(affected_vintages) > 20:
+                        vlist += ' ...'
+                    detail_line = label + vlist
+                    for wrapped_line in textwrap.wrap(detail_line, width=95):
+                        fig, y = _need_space(pdf, fig, y, LINE_H)
+                        plt.text(0.07, y, wrapped_line, ha='left', va='top',
+                                 fontsize=9, weight='bold', color='#002244')
+                        y -= LINE_H
+
+                # Show sample data rows for this issue type (up to 10)
+                detail_cols = [c for c in sub.columns if c != 'issue']
+                if detail_cols:
+                    sample = sub[detail_cols].head(10)
+                    header = '  |  '.join(str(c) for c in detail_cols)
+                    fig, y = _need_space(pdf, fig, y, LINE_H)
+                    plt.text(0.07, y, header, ha='left', va='top',
+                             fontsize=8, weight='bold', color='#64748B')
+                    y -= LINE_H_SM
+                    for _, row in sample.iterrows():
+                        vals = '  |  '.join(str(row[c]) for c in detail_cols)
+                        for wrapped_line in textwrap.wrap(vals, width=100):
+                            fig, y = _need_space(pdf, fig, y, LINE_H_SM)
+                            plt.text(0.07, y, wrapped_line, ha='left', va='top',
+                                     fontsize=8, color='#002244')
+                            y -= LINE_H_SM
+
+                y -= 0.025  # gap between issue types
+        else:
+            fig, y = _need_space(pdf, fig, y, LINE_H)
+            plt.text(0.07, y, 'No vintage-level issues detected.', ha='left',
+                     va='top', fontsize=11, color='#10B981', weight='bold')
+            y -= LINE_H
+
+        _save_page(pdf, fig)
     return buf.getvalue()
 
 
@@ -2081,7 +2217,8 @@ with right:
                     dl_col1, dl_col2, dl_col3 = st.columns(3)
 
                     with dl_col1:
-                        pdf_bytes = export_integrity_pdf(summary, dataset_label=dataset_label)
+                        pdf_bytes = export_integrity_pdf(summary, dataset_label=dataset_label,
+                                                         vintage_issues_df=vintage_issues_df)
                         st.download_button(
                             '📄 PDF Report',
                             pdf_bytes,
