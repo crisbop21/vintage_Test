@@ -1344,6 +1344,33 @@ def run_integrity_checks(df: pd.DataFrame, dpd_threshold: int, gap_days: int = 1
     summary['Vintages with non-monotone raw default rate (QOB)'] = len(non_monotone)
     if non_monotone:
         vintage_issues.append(pd.DataFrame({'Vintage': non_monotone,'issue': 'Raw default rate not monotone (QOB)'}))
+
+    # Identify loans that disappear between consecutive QOBs for non-monotone vintages
+    disappeared_rows = []
+    if non_monotone:
+        for v in non_monotone:
+            v_data = dfd_q[dfd_q['Vintage'] == v]
+            qobs = sorted(v_data['QOB'].unique())
+            for i in range(len(qobs) - 1):
+                q_prev, q_curr = qobs[i], qobs[i + 1]
+                ids_prev = set(v_data.loc[v_data['QOB'] == q_prev, 'Loan ID'])
+                ids_curr = set(v_data.loc[v_data['QOB'] == q_curr, 'Loan ID'])
+                gone = ids_prev - ids_curr
+                if gone:
+                    for lid in gone:
+                        loan_rows = v_data[v_data['Loan ID'] == lid]
+                        last_row = loan_rows.sort_values('Observation date').iloc[-1]
+                        disappeared_rows.append({
+                            'Vintage': v,
+                            'Loan ID': lid,
+                            'Last seen QOB': int(q_prev),
+                            'Missing from QOB': int(q_curr),
+                            'Last DPD': last_row.get('Days past due', ''),
+                            'Last Observation date': last_row.get('Observation date', ''),
+                            'Origination date': last_row.get('Origination date', ''),
+                            'Origination amount': last_row.get('Origination amount', ''),
+                        })
+    disappeared_df = pd.DataFrame(disappeared_rows) if disappeared_rows else pd.DataFrame()
     if row_issue_map:
         sample_indices = list(row_issue_map.keys())
         rows = dfn.loc[sample_indices].copy()
@@ -1365,7 +1392,7 @@ def run_integrity_checks(df: pd.DataFrame, dpd_threshold: int, gap_days: int = 1
     except Exception:
         pass
 
-    return summary, issues_df, vintage_issues_df
+    return summary, issues_df, vintage_issues_df, disappeared_df
 
 # Human-readable descriptions for integrity checks
 CHECK_DESCRIPTIONS = {
@@ -1683,6 +1710,13 @@ def export_issues_excel(issues_df: pd.DataFrame, vintage_issues: pd.DataFrame) -
          else pd.DataFrame({'note':['No row-level issues sampled']})).to_excel(xw, index=False, sheet_name='Row issues')
         (vintage_issues if (vintage_issues is not None and not vintage_issues.empty)
          else pd.DataFrame({'note':['No vintage-level issues']})).to_excel(xw, index=False, sheet_name='Vintage issues')
+    return out.getvalue()
+
+def export_disappeared_loans_excel(disappeared_df: pd.DataFrame) -> bytes:
+    out = BytesIO()
+    with pd.ExcelWriter(out, engine='xlsxwriter') as xw:
+        (disappeared_df if (disappeared_df is not None and not disappeared_df.empty)
+         else pd.DataFrame({'note': ['No disappeared loans detected']})).to_excel(xw, index=False, sheet_name='Disappeared Loans')
     return out.getvalue()
 
 def export_consistency_excel(summary_df: pd.DataFrame,
@@ -2235,7 +2269,7 @@ with right:
                     st.write("Validating data schema...")
                     st.write("Checking date consistency...")
                     st.write("Analyzing value ranges...")
-                    summary, issues_df, vintage_issues_df = run_integrity_checks(chosen_df_raw, dpd_threshold=dpd_threshold)
+                    summary, issues_df, vintage_issues_df, disappeared_df = run_integrity_checks(chosen_df_raw, dpd_threshold=dpd_threshold)
                     status.update(label='✅ Analysis complete!', state='complete')
 
                 if 'fatal' in summary:
@@ -2290,6 +2324,17 @@ with right:
                             'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                             use_container_width=True
                         )
+
+                    with dl_col3:
+                        if disappeared_df is not None and not disappeared_df.empty:
+                            dis_bytes = export_disappeared_loans_excel(disappeared_df)
+                            st.download_button(
+                                '🔍 Disappeared Loans',
+                                dis_bytes,
+                                'disappeared_loans.xlsx',
+                                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                                use_container_width=True
+                            )
 
                     st.markdown("---")
 
