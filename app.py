@@ -1542,12 +1542,12 @@ def export_integrity_pdf(summary: dict, dataset_label: str = 'Full dataset',
                 explanations.append((k, desc))
 
         for label, value in bullets:
-            fig, ax, y = _need_space(pdf, fig, ax, y, LINE_H)
-            ax.text(MARGIN_L + 0.01, y, label, ha='left', va='top',
-                    fontsize=9.5, weight='bold', color=C_DARK)
-            ax.text(0.45, y, value, ha='left', va='top',
-                    fontsize=9.5, color=C_TEXT)
-            y -= LINE_H
+            combined = f'{label}:  {value}'
+            for wrapped in textwrap.wrap(combined, width=95):
+                fig, ax, y = _need_space(pdf, fig, ax, y, LINE_H)
+                ax.text(MARGIN_L + 0.01, y, wrapped, ha='left', va='top',
+                        fontsize=9.5, color=C_TEXT)
+                y -= LINE_H
 
         y -= 0.02
         _draw_rule(ax, y)
