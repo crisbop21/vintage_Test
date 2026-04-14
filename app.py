@@ -749,10 +749,31 @@ def ensure_types(df: pd.DataFrame) -> pd.DataFrame:
         df[c] = pd.to_numeric(df[c], errors='coerce')
     return df
 
-def add_vintage_mob(df: pd.DataFrame) -> pd.DataFrame:
-    """Add quarterly Vintage (YYYYQx) and monthly MOB (keep for other calcs)."""
+VINTAGE_GRANULARITY_OPTIONS = {
+    'Monthly': 'M',
+    'Quarterly': 'Q',
+    'Semi-annual (6 months)': 'H',
+    'Yearly': 'Y',
+}
+
+def add_vintage_mob(df: pd.DataFrame, granularity: str = 'Q') -> pd.DataFrame:
+    """Add Vintage cohort label and monthly MOB.
+
+    granularity: 'M' (monthly, YYYY-MM), 'Q' (quarterly, YYYYQx — default),
+                 'H' (semi-annual, YYYYHx), 'Y' (yearly, YYYY).
+    """
     df = df.copy()
-    df['Vintage'] = df['Origination date'].dt.to_period('Q').astype(str)
+    g = (granularity or 'Q').upper()
+    od = df['Origination date']
+    if g == 'M':
+        df['Vintage'] = od.dt.to_period('M').astype(str)
+    elif g == 'H':
+        half = ((od.dt.month - 1) // 6 + 1).astype('Int64')
+        df['Vintage'] = od.dt.year.astype('Int64').astype(str) + 'H' + half.astype(str)
+    elif g == 'Y':
+        df['Vintage'] = od.dt.year.astype('Int64').astype(str)
+    else:  # 'Q' default
+        df['Vintage'] = od.dt.to_period('Q').astype(str)
     mob = ((df['Observation date'].dt.year - df['Origination date'].dt.year) * 12
           + (df['Observation date'].dt.month - df['Origination date'].dt.month)) + 1
     df['MOB'] = mob
@@ -790,10 +811,10 @@ def _df_key(df: pd.DataFrame) -> str:
     return m.hexdigest()
 
 @cache_data_smart(show_spinner=False, hash_funcs={pd.DataFrame: _df_key})
-def prepare_base_cached(raw_df: pd.DataFrame) -> pd.DataFrame:
+def prepare_base_cached(raw_df: pd.DataFrame, vintage_granularity: str = 'Q') -> pd.DataFrame:
     dfn = normalize_columns(raw_df)
     dfn = ensure_types(dfn)
-    dfn = add_vintage_mob(dfn)
+    dfn = add_vintage_mob(dfn, granularity=vintage_granularity)
     dfn['Vintage'] = dfn['Vintage'].astype('category')
     dfn['Loan ID'] = dfn['Loan ID'].astype('category')
     for c in ['Days past due','Origination amount','Current amount']:
@@ -854,9 +875,10 @@ def build_chart_data_fast(raw_df: pd.DataFrame, dpd_threshold: int,
                           cure_adjusted: bool = False,
                           exclude_indices: Optional[set] = None,
                           pd_by_amount: bool = False,
+                          vintage_granularity: str = 'Q',
                           prog: Optional[Callable[[str], None]] = None) -> tuple[pd.DataFrame, dict]:
     if prog: prog("Preparing base dataset …")
-    base = prepare_base_cached(raw_df)
+    base = prepare_base_cached(raw_df, vintage_granularity=vintage_granularity)
 
     if exclude_indices:
         base = base.loc[~base.index.isin(exclude_indices)]
@@ -1171,7 +1193,8 @@ def _years_list(ser: pd.Series) -> list:
     except Exception:
         return []
 
-def run_integrity_checks(df: pd.DataFrame, dpd_threshold: int, gap_days: int = 120, after_mat_tol_days: int = 31):
+def run_integrity_checks(df: pd.DataFrame, dpd_threshold: int, gap_days: int = 120, after_mat_tol_days: int = 31,
+                         vintage_granularity: str = 'Q'):
     summary = {}
     vintage_issues = []
     row_issue_map: dict[int, list[str]] = {}
@@ -1289,7 +1312,7 @@ def run_integrity_checks(df: pd.DataFrame, dpd_threshold: int, gap_days: int = 1
     track(curr_gt_orig, 'Current > Origination')
 
     # Consistency + QOB aggregation sanity
-    dfd = add_vintage_mob(dfn).sort_values(['Loan ID','Observation date'])
+    dfd = add_vintage_mob(dfn, granularity=vintage_granularity).sort_values(['Loan ID','Observation date'])
     dfd['is_def'] = (dfd['Days past due'] >= dpd_threshold).astype(np.uint8)
     dfd['is_def_cum'] = dfd.groupby('Loan ID', sort=False)['is_def'].cummax()
     def_cum_reset = dfd.groupby('Loan ID', sort=False)['is_def_cum'].diff() < 0
@@ -1789,8 +1812,10 @@ def export_consistency_excel(summary_df: pd.DataFrame,
 # Vintage default summary (Cum_PD, Obs_Time, annualized rate)
 # ──────────────────────────────────────────────────────────────────────────────
 def compute_vintage_default_summary(raw_df: pd.DataFrame, dpd_threshold: int,
-                                    pd_by_amount: bool = False) -> pd.DataFrame:
-    dfn = normalize_columns(raw_df); dfn = ensure_types(dfn); dfn = add_vintage_mob(dfn)
+                                    pd_by_amount: bool = False,
+                                    vintage_granularity: str = 'Q') -> pd.DataFrame:
+    dfn = normalize_columns(raw_df); dfn = ensure_types(dfn)
+    dfn = add_vintage_mob(dfn, granularity=vintage_granularity)
     dfn = dfn.sort_values(['Loan ID','Observation date'])
     dfn['__def'] = (dfn['Days past due'] >= dpd_threshold)
 
@@ -1852,9 +1877,11 @@ def compute_vintage_default_summary(raw_df: pd.DataFrame, dpd_threshold: int,
 # ──────────────────────────────────────────────────────────────────────────────
 def compute_segment_default_summary(raw_df: pd.DataFrame, dpd_threshold: int,
                                     segment_col: str,
-                                    pd_by_amount: bool = False) -> pd.DataFrame:
+                                    pd_by_amount: bool = False,
+                                    vintage_granularity: str = 'Q') -> pd.DataFrame:
     """Compute PD metrics grouped by values of *segment_col* instead of Vintage."""
-    dfn = normalize_columns(raw_df); dfn = ensure_types(dfn); dfn = add_vintage_mob(dfn)
+    dfn = normalize_columns(raw_df); dfn = ensure_types(dfn)
+    dfn = add_vintage_mob(dfn, granularity=vintage_granularity)
 
     # Preserve original segment values per loan (use the value from the first observation)
     if segment_col not in dfn.columns:
@@ -2021,6 +2048,14 @@ with left:
         help='Loans are considered in default when Days Past Due exceeds this threshold'
     )
 
+    vintage_granularity_label = st.selectbox(
+        '📅 Vintage Grouping',
+        list(VINTAGE_GRANULARITY_OPTIONS.keys()),
+        index=1,  # Quarterly default
+        help='Group origination cohorts by month, quarter, 6 months, or year.'
+    )
+    vintage_granularity = VINTAGE_GRANULARITY_OPTIONS[vintage_granularity_label]
+
     pretty_ints = st.checkbox(
         '📊 Format with thousand separators',
         value=False,
@@ -2156,6 +2191,16 @@ with right:
                 ">
                     <div style="color: {WB_MUTED}; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">DPD Threshold</div>
                     <div style="color: {WB_PRIMARY}; font-size: 1.8rem; font-weight: 700;">≥{dpd_threshold}</div>
+                </div>
+                <div style="
+                    background: white;
+                    border-radius: 12px;
+                    padding: 20px;
+                    border: 1px solid {WB_BORDER};
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+                ">
+                    <div style="color: {WB_MUTED}; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Vintage Grouping</div>
+                    <div style="color: {WB_PRIMARY}; font-size: 1.8rem; font-weight: 700;">{vintage_granularity_label}</div>
                 </div>
             </div>
             """,
@@ -2317,7 +2362,9 @@ with right:
                     st.write("Validating data schema...")
                     st.write("Checking date consistency...")
                     st.write("Analyzing value ranges...")
-                    summary, issues_df, vintage_issues_df, disappeared_df = run_integrity_checks(chosen_df_raw, dpd_threshold=dpd_threshold)
+                    summary, issues_df, vintage_issues_df, disappeared_df = run_integrity_checks(
+                        chosen_df_raw, dpd_threshold=dpd_threshold,
+                        vintage_granularity=vintage_granularity)
                     status.update(label='✅ Analysis complete!', state='complete')
 
                 if 'fatal' in summary:
@@ -2441,7 +2488,8 @@ with right:
                 try:
                     summary_df = compute_vintage_default_summary(
                         chosen_df_raw, dpd_threshold=dpd_threshold,
-                        pd_by_amount=pd_by_amount_table)
+                        pd_by_amount=pd_by_amount_table,
+                        vintage_granularity=vintage_granularity)
 
                     # Key metrics cards
                     total_loans = summary_df['Unique_loans'].sum()
@@ -2673,6 +2721,7 @@ with right:
                             dpd_threshold=dpd_threshold,
                             segment_col=seg_col_choice,
                             pd_by_amount=pd_by_amount_seg,
+                            vintage_granularity=vintage_granularity,
                         )
 
                         # Key metrics cards
@@ -3009,6 +3058,7 @@ with right:
                         cure_adjusted=cure_adjusted,
                         exclude_indices=excl,
                         pd_by_amount=pd_by_amount_chart,
+                        vintage_granularity=vintage_granularity,
                         prog=upd,
                     )
 
@@ -3100,7 +3150,8 @@ with right:
                                 try:
                                     _summary = compute_vintage_default_summary(
                                         chosen_df_raw, dpd_threshold=dpd_threshold,
-                                        pd_by_amount=pd_by_amount_chart)
+                                        pd_by_amount=pd_by_amount_chart,
+                                        vintage_granularity=vintage_granularity)
                                     xlsx_bytes = export_consistency_excel(
                                         _summary, df_plot, gran_key)
                                     st.download_button(
