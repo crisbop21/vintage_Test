@@ -2402,8 +2402,24 @@ with right:
                         total_orig_amt = summary_df['Total_Origination_Amount'].sum()
                         total_def_amt = summary_df['Total_Default_Amount'].sum()
                         avg_pd = (total_def_amt / total_orig_amt * 100) if total_orig_amt > 0 else 0
+                        weights = summary_df['Total_Origination_Amount']
                     else:
                         avg_pd = (total_defaults / total_loans * 100) if total_loans > 0 else 0
+                        weights = summary_df['Unique_loans']
+
+                    # Annualized PD average across all rows: derive from aggregate Cum_PD
+                    # and weighted observation time so it stays consistent with Avg Default Rate.
+                    obs_times = summary_df['Observation_Time']
+                    obs_mask = obs_times.notna() & (obs_times > 0) & (weights > 0)
+                    if obs_mask.any() and weights[obs_mask].sum() > 0:
+                        weighted_obs_time = (obs_times[obs_mask] * weights[obs_mask]).sum() / weights[obs_mask].sum()
+                        cum_pd_frac = avg_pd / 100.0
+                        if weighted_obs_time > 0 and cum_pd_frac < 1:
+                            avg_annualized_pd = (1 - (1 - cum_pd_frac) ** (1 / weighted_obs_time)) * 100
+                        else:
+                            avg_annualized_pd = avg_pd
+                    else:
+                        avg_annualized_pd = 0
 
                     st.markdown(
                         f"""
@@ -2442,6 +2458,16 @@ with right:
                             ">
                                 <div style="color: {WB_MUTED}; font-size: 0.75rem; text-transform: uppercase;">Avg Default Rate {'(by Amt)' if pd_by_amount_table else '(by Count)'}</div>
                                 <div style="color: {WB_PRIMARY}; font-size: 1.5rem; font-weight: 700;">{avg_pd:.2f}%</div>
+                            </div>
+                            <div style="
+                                background: white;
+                                border-radius: 12px;
+                                padding: 20px;
+                                border: 1px solid {WB_BORDER};
+                                text-align: center;
+                            ">
+                                <div style="color: {WB_MUTED}; font-size: 0.75rem; text-transform: uppercase;">Annualized PD Avg</div>
+                                <div style="color: {WB_PRIMARY}; font-size: 1.5rem; font-weight: 700;">{avg_annualized_pd:.2f}%</div>
                             </div>
                             <div style="
                                 background: white;
@@ -2608,8 +2634,23 @@ with right:
                             seg_total_orig = seg_summary_df['Total_Origination_Amount'].sum()
                             seg_total_def = seg_summary_df['Total_Default_Amount'].sum()
                             seg_avg_pd = (seg_total_def / seg_total_orig * 100) if seg_total_orig > 0 else 0
+                            seg_weights = seg_summary_df['Total_Origination_Amount']
                         else:
                             seg_avg_pd = (seg_total_defaults / seg_total_loans * 100) if seg_total_loans > 0 else 0
+                            seg_weights = seg_summary_df['Unique_loans']
+
+                        # Annualized PD average across all rows
+                        seg_obs_times = seg_summary_df['Observation_Time']
+                        seg_obs_mask = seg_obs_times.notna() & (seg_obs_times > 0) & (seg_weights > 0)
+                        if seg_obs_mask.any() and seg_weights[seg_obs_mask].sum() > 0:
+                            seg_weighted_obs_time = (seg_obs_times[seg_obs_mask] * seg_weights[seg_obs_mask]).sum() / seg_weights[seg_obs_mask].sum()
+                            seg_cum_pd_frac = seg_avg_pd / 100.0
+                            if seg_weighted_obs_time > 0 and seg_cum_pd_frac < 1:
+                                seg_avg_annualized_pd = (1 - (1 - seg_cum_pd_frac) ** (1 / seg_weighted_obs_time)) * 100
+                            else:
+                                seg_avg_annualized_pd = seg_avg_pd
+                        else:
+                            seg_avg_annualized_pd = 0
 
                         st.markdown(
                             f"""
@@ -2648,6 +2689,16 @@ with right:
                                 ">
                                     <div style="color: {WB_MUTED}; font-size: 0.75rem; text-transform: uppercase;">Avg Default Rate {'(by Amt)' if pd_by_amount_seg else '(by Count)'}</div>
                                     <div style="color: {WB_PRIMARY}; font-size: 1.5rem; font-weight: 700;">{seg_avg_pd:.2f}%</div>
+                                </div>
+                                <div style="
+                                    background: white;
+                                    border-radius: 12px;
+                                    padding: 20px;
+                                    border: 1px solid {WB_BORDER};
+                                    text-align: center;
+                                ">
+                                    <div style="color: {WB_MUTED}; font-size: 0.75rem; text-transform: uppercase;">Annualized PD Avg</div>
+                                    <div style="color: {WB_PRIMARY}; font-size: 1.5rem; font-weight: 700;">{seg_avg_annualized_pd:.2f}%</div>
                                 </div>
                                 <div style="
                                     background: white;
