@@ -2201,12 +2201,15 @@ def suggest_filters_for_target_pd(
                 preview = ', '.join(str(v) for v in kept_cats[:6])
                 if len(kept_cats) > 6:
                     preview += f', … (+{len(kept_cats) - 6} more)'
+                dropped_cats = [c2 for c2 in ordered if c2 not in kept_cats]
                 row = _record(col, 'Categorical',
                               f'{col} ∈ {{{preview}}}',
                               cp, ap, rl, ra,
                               extras={'Kept categories': len(kept_cats),
                                       'Dropped categories': len(ordered) - len(kept_cats),
-                                      'Kept values': kept_cats})
+                                      'Kept values': kept_cats,
+                                      'Dropped values': dropped_cats,
+                                      'Total categories': len(ordered)})
                 _consider(ap, rl, ra, row)
                 # Once only required categories remain, further dropping would
                 # violate the constraint — stop.
@@ -3758,19 +3761,49 @@ with right:
                         f'**{target_pd_pct:.2f}%**.'
                     )
 
-                    if feasible_df is not None and not feasible_df.empty:
-                        st.markdown('#### 🟢 Single-filter recommendations that meet target')
-                        st.caption(
-                            'Ranked by retention (highest first). Each row is a standalone '
-                            'eligibility rule on top of the current sidebar filters.'
-                        )
+                    def _expand_categorical_lists(df: pd.DataFrame) -> pd.DataFrame:
+                        """Add full Kept/Dropped value strings (categorical rows only) and
+                        a Kept/Total count summary so the user can see every value."""
+                        if df is None or df.empty:
+                            return df
+                        out = df.copy()
+
+                        def _join(v):
+                            if isinstance(v, list):
+                                return ', '.join(str(x) for x in v)
+                            return ''
+
+                        out['Kept values (full)']    = out.get('Kept values', pd.Series([None] * len(out))).map(_join)
+                        out['Dropped values (full)'] = out.get('Dropped values', pd.Series([None] * len(out))).map(_join)
+
+                        kept_n  = out.get('Kept categories', pd.Series([None] * len(out)))
+                        total_n = out.get('Total categories', pd.Series([None] * len(out)))
+
+                        def _kt(k, t):
+                            try:
+                                return f'{int(k)} / {int(t)}'
+                            except Exception:
+                                return ''
+
+                        out['Kept / Total'] = [_kt(k, t) for k, t in zip(kept_n, total_n)]
+                        return out
+
+                    def _render_table(df: pd.DataFrame, title: str, caption: str,
+                                      gradient_col: str, gradient_cmap: str,
+                                      download_key: str | None = None,
+                                      download_name: str | None = None):
+                        st.markdown(title)
+                        st.caption(caption)
+                        disp = _expand_categorical_lists(df)
                         show_cols = ['Column', 'Type', 'Filter',
                                      'Cum PD (%)', 'Annualized PD (%)',
                                      'Retained loans', 'Retained origination amt',
-                                     'Retention (count) %', 'Retention (amt) %']
-                        show_cols = [c for c in show_cols if c in feasible_df.columns]
+                                     'Retention (count) %', 'Retention (amt) %',
+                                     'Kept / Total',
+                                     'Kept values (full)', 'Dropped values (full)']
+                        show_cols = [c for c in show_cols if c in disp.columns]
                         styled = (
-                            feasible_df[show_cols].style
+                            disp[show_cols].style
                             .format({
                                 'Cum PD (%)': '{:.2f}',
                                 'Annualized PD (%)': '{:.2f}',
@@ -3779,17 +3812,59 @@ with right:
                                 'Retention (count) %': '{:.1f}',
                                 'Retention (amt) %':   '{:.1f}',
                             })
-                            .background_gradient(subset=['Retention (amt) %' if pd_by_amount_opt else 'Retention (count) %'], cmap='Greens')
+                            .background_gradient(subset=[gradient_col], cmap=gradient_cmap)
                             .hide(axis='index')
                         )
                         st.dataframe(styled, use_container_width=True, height=380)
 
-                        st.download_button(
-                            '📊 Download recommendations (CSV)',
-                            feasible_df[show_cols].to_csv(index=False).encode('utf-8'),
-                            f'pd_optimizer_target_{target_pd_pct:.2f}pct.csv',
-                            'text/csv',
-                            key='opt_feasible_csv',
+                        if download_key and download_name:
+                            # utf-8-sig BOM so Excel renders unicode (∈, ≤, ≥) correctly
+                            csv_bytes = ('\ufeff' + disp[show_cols].to_csv(index=False)).encode('utf-8')
+                            st.download_button(
+                                '📊 Download recommendations (CSV)',
+                                csv_bytes,
+                                download_name,
+                                'text/csv',
+                                key=download_key,
+                            )
+
+                        # Per-row breakdown for categorical rows — full chip lists
+                        cat_rows = disp[disp['Type'] == 'Categorical']
+                        if not cat_rows.empty:
+                            with st.expander(f'📋 Full kept / dropped category lists ({len(cat_rows)})',
+                                             expanded=False):
+                                for _, r in cat_rows.iterrows():
+                                    kept = r.get('Kept values') if isinstance(r.get('Kept values'), list) else []
+                                    dropped = r.get('Dropped values') if isinstance(r.get('Dropped values'), list) else []
+                                    st.markdown(f"**{r['Column']}** — keep {len(kept)} of {len(kept) + len(dropped)} values "
+                                                f"(Ann PD {r['Annualized PD (%)']:.2f}% · "
+                                                f"retains {r['Retention (count) %']:.1f}% by count / "
+                                                f"{r['Retention (amt) %']:.1f}% by amt)")
+                                    cc1, cc2 = st.columns(2)
+                                    with cc1:
+                                        st.markdown('**✅ Keep**')
+                                        if kept:
+                                            st.markdown('\n'.join(f'- {v}' for v in kept))
+                                        else:
+                                            st.caption('— none —')
+                                    with cc2:
+                                        st.markdown('**❌ Exclude**')
+                                        if dropped:
+                                            st.markdown('\n'.join(f'- {v}' for v in dropped))
+                                        else:
+                                            st.caption('— none —')
+                                    st.markdown('---')
+
+                    if feasible_df is not None and not feasible_df.empty:
+                        _render_table(
+                            feasible_df,
+                            title='#### 🟢 Single-filter recommendations that meet target',
+                            caption='Ranked by retention (highest first). Each row is a standalone '
+                                    'eligibility rule on top of the current sidebar filters.',
+                            gradient_col='Retention (amt) %' if pd_by_amount_opt else 'Retention (count) %',
+                            gradient_cmap='Greens',
+                            download_key='opt_feasible_csv',
+                            download_name=f'pd_optimizer_target_{target_pd_pct:.2f}pct.csv',
                         )
                     else:
                         st.warning(
@@ -3799,28 +3874,16 @@ with right:
                         )
 
                     if (feasible_df is None or feasible_df.empty) and partial_df is not None and not partial_df.empty:
-                        st.markdown('#### 🟡 Best single-filter progress (does not reach target)')
-                        st.caption('Per-column filter with the lowest achievable annualized PD '
-                                   'subject to the minimum-retention constraint.')
-                        show_cols = ['Column', 'Type', 'Filter',
-                                     'Cum PD (%)', 'Annualized PD (%)',
-                                     'Retained loans', 'Retained origination amt',
-                                     'Retention (count) %', 'Retention (amt) %']
-                        show_cols = [c for c in show_cols if c in partial_df.columns]
-                        styled = (
-                            partial_df[show_cols].style
-                            .format({
-                                'Cum PD (%)': '{:.2f}',
-                                'Annualized PD (%)': '{:.2f}',
-                                'Retained loans': '{:,.0f}' if pretty_ints else '{:.0f}',
-                                'Retained origination amt': '{:,.2f}' if pretty_ints else '{:.2f}',
-                                'Retention (count) %': '{:.1f}',
-                                'Retention (amt) %':   '{:.1f}',
-                            })
-                            .background_gradient(subset=['Annualized PD (%)'], cmap='Blues_r')
-                            .hide(axis='index')
+                        _render_table(
+                            partial_df,
+                            title='#### 🟡 Best single-filter progress (does not reach target)',
+                            caption='Per-column filter with the lowest achievable annualized PD '
+                                    'subject to the minimum-retention constraint.',
+                            gradient_col='Annualized PD (%)',
+                            gradient_cmap='Blues_r',
+                            download_key='opt_partial_csv',
+                            download_name=f'pd_optimizer_progress_{target_pd_pct:.2f}pct.csv',
                         )
-                        st.dataframe(styled, use_container_width=True, height=380)
 
                     if combo is not None:
                         st.markdown('#### 🔗 Two-filter combo that meets target')
