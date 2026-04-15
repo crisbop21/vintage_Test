@@ -1946,6 +1946,331 @@ def compute_segment_default_summary(raw_df: pd.DataFrame, dpd_threshold: int,
     return out.sort_values('Segment').reset_index(drop=True)
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Loan-level builder & target-PD filter recommender
+# ──────────────────────────────────────────────────────────────────────────────
+# Internal loan-level columns that should NOT be offered as eligibility filters
+_LOAN_INTERNAL_COLS = {
+    'Loan ID', 'first_obs', 'last_obs', 'def_date', 'obs_end',
+    'defaulted', 'Obs_Time_years', 'Origination_amount',
+    'Default_current_amount',
+}
+
+
+def compute_loan_level_table(raw_df: pd.DataFrame, dpd_threshold: int,
+                             vintage_granularity: str = 'Q') -> pd.DataFrame:
+    """Build a one-row-per-loan table with default flag, observation time, origination
+    amount, default current amount, and every non-reserved attribute (value at the
+    first observation). Used as the working set for the PD Optimizer."""
+    dfn = normalize_columns(raw_df); dfn = ensure_types(dfn)
+    dfn = add_vintage_mob(dfn, granularity=vintage_granularity)
+    dfn = dfn.sort_values(['Loan ID', 'Observation date'])
+    dfn['__def'] = (dfn['Days past due'] >= dpd_threshold)
+
+    g = dfn.groupby('Loan ID', sort=False)
+    first_obs = g['Observation date'].min()
+    last_obs  = g['Observation date'].max()
+    orig_amt  = g['Origination amount'].first()
+    first_def_date = (dfn.loc[dfn['__def']]
+                        .groupby('Loan ID', sort=False)['Observation date']
+                        .min())
+
+    loan_df = pd.DataFrame({
+        'first_obs': first_obs,
+        'last_obs':  last_obs,
+        'Origination_amount': orig_amt,
+    })
+    loan_df['def_date']  = first_def_date
+    loan_df['defaulted'] = loan_df['def_date'].notna()
+    loan_df['obs_end']   = loan_df['def_date'].fillna(loan_df['last_obs'])
+    obs_days = (loan_df['obs_end'] - loan_df['first_obs']).dt.days
+    loan_df['Obs_Time_years'] = (obs_days / 365.25).astype('float64')
+    loan_df.loc[loan_df['Obs_Time_years'] <= 0, 'Obs_Time_years'] = np.nan
+
+    # Current amount at first default date (0 for non-defaulted loans)
+    def_rows = dfn.loc[dfn['__def']]
+    if not def_rows.empty:
+        first_def_rows = (def_rows.sort_values('Observation date')
+                          .drop_duplicates(subset='Loan ID', keep='first'))
+        first_def_cur_amt = first_def_rows.set_index('Loan ID')['Current amount']
+    else:
+        first_def_cur_amt = pd.Series(dtype='float64')
+    loan_df['Default_current_amount'] = first_def_cur_amt
+    loan_df.loc[~loan_df['defaulted'], 'Default_current_amount'] = 0.0
+    loan_df['Default_current_amount'] = loan_df['Default_current_amount'].fillna(0.0)
+
+    # Attach every non-reserved attribute (first-observation value per loan)
+    non_reserved = [c for c in dfn.columns
+                    if str(c).strip() not in RESERVED_COLS
+                    and not str(c).startswith('__')]
+    for c in non_reserved:
+        loan_df[c] = g[c].first()
+
+    return loan_df.reset_index()
+
+
+def _ann_pd_from_subset(sub: pd.DataFrame, pd_by_amount: bool) -> tuple:
+    """Return (cum_pd, ann_pd, n_loans, orig_amt) for a loan-level subset."""
+    n = len(sub)
+    if n == 0:
+        return (np.nan, np.nan, 0, 0.0)
+    defaulted = int(sub['defaulted'].sum())
+    orig_amt  = float(sub['Origination_amount'].sum(skipna=True))
+    if pd_by_amount:
+        def_amt = float(sub['Default_current_amount'].sum(skipna=True))
+        cum_pd  = (def_amt / orig_amt) if orig_amt > 0 else np.nan
+    else:
+        cum_pd  = defaulted / n
+    obs = sub['Obs_Time_years'].dropna()
+    obs_time = float(obs.median()) if not obs.empty else np.nan
+    if (cum_pd is None) or np.isnan(cum_pd) or np.isnan(obs_time) \
+            or obs_time <= 0 or cum_pd >= 1:
+        ann_pd = cum_pd
+    else:
+        ann_pd = 1 - (1 - cum_pd) ** (1 / obs_time)
+    return (cum_pd, ann_pd, n, orig_amt)
+
+
+def suggest_filters_for_target_pd(
+    loan_df: pd.DataFrame,
+    target_ann_pd: float,
+    candidate_cols: list,
+    pd_by_amount: bool = False,
+    n_quantiles: int = 21,
+    min_retention: float = 0.05,
+) -> tuple:
+    """For each candidate column, find the single eligibility filter that brings the
+    portfolio's annualized PD at or below *target_ann_pd* while retaining the most
+    loans (or origination amount when *pd_by_amount*).
+
+    Numeric columns are searched as one-sided thresholds (``col ≤ v`` or ``col ≥ v``)
+    across *n_quantiles* quantile cut-points. Categorical columns are searched by
+    greedily excluding the highest-PD categories.
+
+    Returns ``(feasible_df, partial_df, baseline)`` where *feasible_df* holds filters
+    that reach target, *partial_df* holds the best progress per column when no filter
+    reaches target, and *baseline* is ``(cum_pd, ann_pd, n_loans, orig_amt)`` of the
+    input portfolio.
+    """
+    baseline = _ann_pd_from_subset(loan_df, pd_by_amount)
+    _, base_ann_pd, base_n, base_amt = baseline
+
+    feasible_rows = []
+    partial_rows  = []
+
+    if base_n == 0 or np.isnan(base_ann_pd):
+        return pd.DataFrame(), pd.DataFrame(), baseline
+
+    qs = np.linspace(0.0, 1.0, n_quantiles)
+
+    def _record(col: str, ftype: str, filter_desc: str,
+                cp, ap, rl, ra, extras: dict | None = None) -> dict:
+        row = {
+            'Column': col,
+            'Type': ftype,
+            'Filter': filter_desc,
+            'Cum PD (%)': (cp * 100) if cp is not None and not (isinstance(cp, float) and np.isnan(cp)) else np.nan,
+            'Annualized PD (%)': ap * 100 if ap is not None and not np.isnan(ap) else np.nan,
+            'Retained loans': rl,
+            'Retained origination amt': ra,
+            'Retention (count) %': (rl / base_n * 100) if base_n > 0 else 0.0,
+            'Retention (amt) %':   (ra / base_amt * 100) if base_amt > 0 else 0.0,
+        }
+        if extras:
+            row.update(extras)
+        return row
+
+    for col in candidate_cols:
+        if col not in loan_df.columns:
+            continue
+        col_series = loan_df[col]
+        is_num = pd.api.types.is_numeric_dtype(col_series) and col_series.nunique(dropna=True) > 1
+
+        best_feasible = None     # (retained, row_dict)
+        best_progress = None     # (ann_pd, row_dict) — track smallest ann_pd seen
+
+        def _consider(ap, rl, ra, row_dict):
+            """Decide whether this candidate beats the running bests."""
+            nonlocal best_feasible, best_progress
+            if ap is None or np.isnan(ap):
+                return
+            retained = ra if pd_by_amount else rl
+            min_keep = (base_amt if pd_by_amount else base_n) * min_retention
+            if retained < min_keep:
+                return
+            if ap <= target_ann_pd:
+                if best_feasible is None or retained > best_feasible[0]:
+                    best_feasible = (retained, row_dict)
+            if best_progress is None or ap < best_progress[0]:
+                best_progress = (ap, row_dict)
+
+        if is_num:
+            numeric_vals = pd.to_numeric(col_series, errors='coerce')
+            if numeric_vals.dropna().empty:
+                continue
+            try:
+                val_grid = numeric_vals.quantile(qs).values
+            except Exception:
+                continue
+
+            # Upper threshold: keep col ≤ v
+            for q, v in zip(qs, val_grid):
+                if q == 0 or np.isnan(v):
+                    continue
+                sub = loan_df[numeric_vals <= v]
+                cp, ap, rl, ra = _ann_pd_from_subset(sub, pd_by_amount)
+                row = _record(col, 'Numeric ≤',
+                              f'{col} ≤ {v:.6g}',
+                              cp, ap, rl, ra,
+                              extras={'Threshold direction': '≤',
+                                      'Threshold value':     float(v)})
+                _consider(ap, rl, ra, row)
+
+            # Lower threshold: keep col ≥ v
+            for q, v in zip(qs, val_grid):
+                if q == 1 or np.isnan(v):
+                    continue
+                sub = loan_df[numeric_vals >= v]
+                cp, ap, rl, ra = _ann_pd_from_subset(sub, pd_by_amount)
+                row = _record(col, 'Numeric ≥',
+                              f'{col} ≥ {v:.6g}',
+                              cp, ap, rl, ra,
+                              extras={'Threshold direction': '≥',
+                                      'Threshold value':     float(v)})
+                _consider(ap, rl, ra, row)
+        else:
+            # Categorical — fill missing as "(missing)" for stable grouping
+            tmp_col = col_series.astype('object').where(col_series.notna(), other='(missing)')
+            aux = pd.DataFrame({
+                'cat': tmp_col.values,
+                'defaulted': loan_df['defaulted'].values,
+                'orig':      loan_df['Origination_amount'].values,
+                'def_amt':   loan_df['Default_current_amount'].values,
+            })
+            agg = aux.groupby('cat', dropna=False).agg(
+                n=('defaulted', 'size'),
+                d=('defaulted', 'sum'),
+                orig=('orig', 'sum'),
+                def_amt=('def_amt', 'sum'),
+            )
+            if pd_by_amount:
+                agg['cat_pd'] = np.where(agg['orig'] > 0, agg['def_amt'] / agg['orig'], 0.0)
+            else:
+                agg['cat_pd'] = np.where(agg['n'] > 0, agg['d'] / agg['n'], 0.0)
+            agg = agg.sort_values('cat_pd', ascending=False)
+
+            ordered = list(agg.index)
+            if len(ordered) < 2:
+                continue  # nothing to drop
+
+            # Iteratively drop highest-PD category and evaluate
+            for drop_n in range(len(ordered)):
+                kept_cats = ordered[drop_n:]
+                if not kept_cats:
+                    break
+                mask = tmp_col.isin(kept_cats)
+                sub = loan_df[mask.values]
+                cp, ap, rl, ra = _ann_pd_from_subset(sub, pd_by_amount)
+                preview = ', '.join(str(v) for v in kept_cats[:6])
+                if len(kept_cats) > 6:
+                    preview += f', … (+{len(kept_cats) - 6} more)'
+                row = _record(col, 'Categorical',
+                              f'{col} ∈ {{{preview}}}',
+                              cp, ap, rl, ra,
+                              extras={'Kept categories': len(kept_cats),
+                                      'Dropped categories': len(ordered) - len(kept_cats),
+                                      'Kept values': kept_cats})
+                _consider(ap, rl, ra, row)
+
+        if best_feasible is not None:
+            feasible_rows.append(best_feasible[1])
+        elif best_progress is not None:
+            partial_rows.append(best_progress[1])
+
+    sort_key = 'Retained origination amt' if pd_by_amount else 'Retained loans'
+
+    feasible_df = pd.DataFrame(feasible_rows)
+    if not feasible_df.empty:
+        feasible_df = feasible_df.sort_values(sort_key, ascending=False).reset_index(drop=True)
+
+    partial_df = pd.DataFrame(partial_rows)
+    if not partial_df.empty:
+        partial_df = partial_df.sort_values('Annualized PD (%)', ascending=True).reset_index(drop=True)
+
+    return feasible_df, partial_df, baseline
+
+
+def suggest_combo_filter(
+    loan_df: pd.DataFrame,
+    target_ann_pd: float,
+    feasible_df: pd.DataFrame,
+    partial_df: pd.DataFrame,
+    pd_by_amount: bool,
+    top_k: int = 3,
+) -> Optional[dict]:
+    """Attempt to combine the top single-column filters (from *feasible_df* first,
+    else from *partial_df*) into a two-filter rule that meets target with higher
+    retention. Returns a dict describing the combo, or None if no improvement."""
+    if loan_df.empty:
+        return None
+
+    pool = feasible_df if not feasible_df.empty else partial_df
+    if pool.empty or len(pool) < 2:
+        return None
+
+    pool = pool.head(top_k)
+    baseline = _ann_pd_from_subset(loan_df, pd_by_amount)
+    _, base_ann_pd, base_n, base_amt = baseline
+
+    def _apply_filter(df, row):
+        col = row['Column']
+        if col not in df.columns:
+            return None
+        if row['Type'].startswith('Numeric'):
+            vals = pd.to_numeric(df[col], errors='coerce')
+            v = row.get('Threshold value')
+            d = row.get('Threshold direction')
+            if v is None or d is None:
+                return None
+            return df[(vals <= v) if d == '≤' else (vals >= v)]
+        else:
+            kept = row.get('Kept values')
+            if not isinstance(kept, list):
+                return None
+            ser = df[col].astype('object').where(df[col].notna(), other='(missing)')
+            return df[ser.isin(kept)]
+
+    best = None  # (retained, combo_dict)
+    for i in range(len(pool)):
+        for j in range(i + 1, len(pool)):
+            r1 = pool.iloc[i].to_dict()
+            r2 = pool.iloc[j].to_dict()
+            if r1['Column'] == r2['Column']:
+                continue
+            step1 = _apply_filter(loan_df, r1)
+            if step1 is None or step1.empty:
+                continue
+            step2 = _apply_filter(step1, r2)
+            if step2 is None or step2.empty:
+                continue
+            cp, ap, rl, ra = _ann_pd_from_subset(step2, pd_by_amount)
+            if ap is None or np.isnan(ap):
+                continue
+            retained = ra if pd_by_amount else rl
+            if ap <= target_ann_pd and (best is None or retained > best[0]):
+                best = (retained, {
+                    'Filter 1': r1['Filter'],
+                    'Filter 2': r2['Filter'],
+                    'Cum PD (%)': (cp * 100) if cp is not None and not np.isnan(cp) else np.nan,
+                    'Annualized PD (%)': ap * 100,
+                    'Retained loans': rl,
+                    'Retained origination amt': ra,
+                    'Retention (count) %': (rl / base_n * 100) if base_n > 0 else 0.0,
+                    'Retention (amt) %':   (ra / base_amt * 100) if base_amt > 0 else 0.0,
+                })
+    return best[1] if best else None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # UI - SIDEBAR
 # ──────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -2323,10 +2648,11 @@ with right:
                             unsafe_allow_html=True)
 
         # Tabs with icons
-        tab_integrity, tab_tables, tab_charts = st.tabs([
+        tab_integrity, tab_tables, tab_charts, tab_optimizer = st.tabs([
             "🛡️ Data Integrity",
             "📊 Summary Tables",
-            "📈 Vintage Charts"
+            "📈 Vintage Charts",
+            "🎯 PD Optimizer",
         ])
 
         # ════════════════════════════════════════════════════════════════════
@@ -3167,6 +3493,266 @@ with right:
                 except Exception as e:
                     st.error(f'❌ Chart generation failed: {e}')
 
+        # ════════════════════════════════════════════════════════════════════
+        # PD OPTIMIZER TAB
+        # ════════════════════════════════════════════════════════════════════
+        with tab_optimizer:
+            st.markdown(
+                f"""
+                <div style="
+                    background: linear-gradient(135deg, {WB_LIGHT} 0%, white 100%);
+                    border-radius: 16px;
+                    padding: 24px;
+                    border: 1px solid {WB_BORDER};
+                    margin-bottom: 24px;
+                ">
+                    <h3 style="margin: 0 0 8px 0; color: {WB_TEXT};">🎯 Target PD Optimizer</h3>
+                    <p style="margin: 0; color: {WB_MUTED}; font-size: 0.9rem;">
+                        Enter the annualized PD you want to hit and the tool scans every non-reserved
+                        attribute to recommend single-filter eligibility rules (with the highest retention)
+                        that bring the portfolio at or below target. A two-filter combo is also explored.
+                    </p>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+            opt_c1, opt_c2, opt_c3 = st.columns([1.2, 1.2, 1])
+            with opt_c1:
+                target_pd_pct = st.number_input(
+                    '🎯 Target annualized PD (%)',
+                    min_value=0.0, max_value=100.0,
+                    value=5.0, step=0.1,
+                    help='Desired per-annum default rate for the filtered portfolio.',
+                    key='opt_target_pd',
+                )
+            with opt_c2:
+                pd_calc_method_opt = st.selectbox(
+                    '📐 PD Calculation Method',
+                    ['By Loan Count', 'By Amount (Current / Origination)'],
+                    index=0,
+                    help='Retention is ranked by the same basis — loans or origination amount.',
+                    key='pd_calc_method_opt',
+                )
+                pd_by_amount_opt = pd_calc_method_opt == 'By Amount (Current / Origination)'
+            with opt_c3:
+                min_retention_pct = st.slider(
+                    'Min retention (%)',
+                    min_value=1, max_value=80, value=5, step=1,
+                    help='Discard filters that keep fewer than this share of the baseline portfolio.',
+                    key='opt_min_retention',
+                )
+
+            run_opt = st.button('🚀 Generate recommendations', type='primary', key='opt_run')
+
+            if run_opt:
+                with st.status('🔍 Scanning attributes for best eligibility rules…',
+                               expanded=False) as status:
+                    try:
+                        loan_tbl = compute_loan_level_table(
+                            chosen_df_raw,
+                            dpd_threshold=dpd_threshold,
+                            vintage_granularity=vintage_granularity,
+                        )
+                        candidate_cols = [c for c in loan_tbl.columns
+                                          if c not in _LOAN_INTERNAL_COLS
+                                          and not str(c).startswith('__')]
+                        feasible_df, partial_df, baseline = suggest_filters_for_target_pd(
+                            loan_tbl,
+                            target_ann_pd=target_pd_pct / 100.0,
+                            candidate_cols=candidate_cols,
+                            pd_by_amount=pd_by_amount_opt,
+                            min_retention=min_retention_pct / 100.0,
+                        )
+                        combo = suggest_combo_filter(
+                            loan_tbl,
+                            target_ann_pd=target_pd_pct / 100.0,
+                            feasible_df=feasible_df,
+                            partial_df=partial_df,
+                            pd_by_amount=pd_by_amount_opt,
+                        )
+                        status.update(label='✅ Scan complete.', state='complete')
+                    except Exception as e:
+                        status.update(label=f'❌ Optimizer failed: {e}', state='error')
+                        feasible_df = partial_df = pd.DataFrame()
+                        baseline = (np.nan, np.nan, 0, 0.0)
+                        combo = None
+
+                base_cp, base_ap, base_n, base_amt = baseline
+                base_ap_pct = base_ap * 100 if base_ap is not None and not np.isnan(base_ap) else float('nan')
+                base_cp_pct = base_cp * 100 if base_cp is not None and not np.isnan(base_cp) else float('nan')
+                gap_pct = base_ap_pct - target_pd_pct if not np.isnan(base_ap_pct) else float('nan')
+                on_target = not np.isnan(base_ap_pct) and base_ap_pct <= target_pd_pct
+
+                # Baseline summary card
+                st.markdown(
+                    f"""
+                    <div style="
+                        display: grid;
+                        grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+                        gap: 16px;
+                        margin-bottom: 20px;
+                    ">
+                        <div style="background: white; border-radius: 12px; padding: 18px;
+                             border: 1px solid {WB_BORDER}; text-align: center;">
+                            <div style="color: {WB_MUTED}; font-size: 0.72rem; text-transform: uppercase;">Baseline Loans</div>
+                            <div style="color: {WB_TEXT}; font-size: 1.5rem; font-weight: 700;">{base_n:,}</div>
+                        </div>
+                        <div style="background: white; border-radius: 12px; padding: 18px;
+                             border: 1px solid {WB_BORDER}; text-align: center;">
+                            <div style="color: {WB_MUTED}; font-size: 0.72rem; text-transform: uppercase;">Baseline Cum PD</div>
+                            <div style="color: {WB_PRIMARY}; font-size: 1.5rem; font-weight: 700;">{base_cp_pct:.2f}%</div>
+                        </div>
+                        <div style="background: white; border-radius: 12px; padding: 18px;
+                             border: 1px solid {WB_BORDER}; text-align: center;">
+                            <div style="color: {WB_MUTED}; font-size: 0.72rem; text-transform: uppercase;">Baseline Ann. PD</div>
+                            <div style="color: {WB_PRIMARY}; font-size: 1.5rem; font-weight: 700;">{base_ap_pct:.2f}%</div>
+                        </div>
+                        <div style="background: white; border-radius: 12px; padding: 18px;
+                             border: 1px solid {WB_BORDER}; text-align: center;">
+                            <div style="color: {WB_MUTED}; font-size: 0.72rem; text-transform: uppercase;">Target</div>
+                            <div style="color: {WB_TEXT}; font-size: 1.5rem; font-weight: 700;">{target_pd_pct:.2f}%</div>
+                        </div>
+                        <div style="background: white; border-radius: 12px; padding: 18px;
+                             border: 1px solid {WB_BORDER}; text-align: center;">
+                            <div style="color: {WB_MUTED}; font-size: 0.72rem; text-transform: uppercase;">Gap to Target</div>
+                            <div style="color: {'#10B981' if on_target else '#EF4444'}; font-size: 1.5rem; font-weight: 700;">{gap_pct:+.2f} pp</div>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+                if on_target:
+                    st.success(
+                        f'✅ The current filtered portfolio is already at or below target '
+                        f'({base_ap_pct:.2f}% ≤ {target_pd_pct:.2f}%). No tightening required.'
+                    )
+                elif np.isnan(base_ap_pct):
+                    st.warning('Annualized PD could not be computed on the current portfolio '
+                               '(insufficient observation time).')
+                else:
+                    st.info(
+                        f'Current annualized PD is **{base_ap_pct:.2f}%** — '
+                        f'need to reduce by **{gap_pct:.2f} pp** to reach '
+                        f'**{target_pd_pct:.2f}%**.'
+                    )
+
+                    if feasible_df is not None and not feasible_df.empty:
+                        st.markdown('#### 🟢 Single-filter recommendations that meet target')
+                        st.caption(
+                            'Ranked by retention (highest first). Each row is a standalone '
+                            'eligibility rule on top of the current sidebar filters.'
+                        )
+                        show_cols = ['Column', 'Type', 'Filter',
+                                     'Cum PD (%)', 'Annualized PD (%)',
+                                     'Retained loans', 'Retained origination amt',
+                                     'Retention (count) %', 'Retention (amt) %']
+                        show_cols = [c for c in show_cols if c in feasible_df.columns]
+                        styled = (
+                            feasible_df[show_cols].style
+                            .format({
+                                'Cum PD (%)': '{:.2f}',
+                                'Annualized PD (%)': '{:.2f}',
+                                'Retained loans': '{:,.0f}' if pretty_ints else '{:.0f}',
+                                'Retained origination amt': '{:,.2f}' if pretty_ints else '{:.2f}',
+                                'Retention (count) %': '{:.1f}',
+                                'Retention (amt) %':   '{:.1f}',
+                            })
+                            .background_gradient(subset=['Retention (amt) %' if pd_by_amount_opt else 'Retention (count) %'], cmap='Greens')
+                            .hide(axis='index')
+                        )
+                        st.dataframe(styled, use_container_width=True, height=380)
+
+                        st.download_button(
+                            '📊 Download recommendations (CSV)',
+                            feasible_df[show_cols].to_csv(index=False).encode('utf-8'),
+                            f'pd_optimizer_target_{target_pd_pct:.2f}pct.csv',
+                            'text/csv',
+                            key='opt_feasible_csv',
+                        )
+                    else:
+                        st.warning(
+                            '⚠️ No single attribute filter meets target while keeping at '
+                            f'least {min_retention_pct}% retention. See the best-progress '
+                            'table below and try the two-filter combo.'
+                        )
+
+                    if (feasible_df is None or feasible_df.empty) and partial_df is not None and not partial_df.empty:
+                        st.markdown('#### 🟡 Best single-filter progress (does not reach target)')
+                        st.caption('Per-column filter with the lowest achievable annualized PD '
+                                   'subject to the minimum-retention constraint.')
+                        show_cols = ['Column', 'Type', 'Filter',
+                                     'Cum PD (%)', 'Annualized PD (%)',
+                                     'Retained loans', 'Retained origination amt',
+                                     'Retention (count) %', 'Retention (amt) %']
+                        show_cols = [c for c in show_cols if c in partial_df.columns]
+                        styled = (
+                            partial_df[show_cols].style
+                            .format({
+                                'Cum PD (%)': '{:.2f}',
+                                'Annualized PD (%)': '{:.2f}',
+                                'Retained loans': '{:,.0f}' if pretty_ints else '{:.0f}',
+                                'Retained origination amt': '{:,.2f}' if pretty_ints else '{:.2f}',
+                                'Retention (count) %': '{:.1f}',
+                                'Retention (amt) %':   '{:.1f}',
+                            })
+                            .background_gradient(subset=['Annualized PD (%)'], cmap='Blues_r')
+                            .hide(axis='index')
+                        )
+                        st.dataframe(styled, use_container_width=True, height=380)
+
+                    if combo is not None:
+                        st.markdown('#### 🔗 Two-filter combo that meets target')
+                        st.caption('Applies the two recommended filters together '
+                                   '(AND logic) — often retains more than the most-aggressive single filter.')
+                        combo_df = pd.DataFrame([combo])
+                        show_cols = ['Filter 1', 'Filter 2', 'Cum PD (%)',
+                                     'Annualized PD (%)', 'Retained loans',
+                                     'Retained origination amt',
+                                     'Retention (count) %', 'Retention (amt) %']
+                        show_cols = [c for c in show_cols if c in combo_df.columns]
+                        styled = (
+                            combo_df[show_cols].style
+                            .format({
+                                'Cum PD (%)': '{:.2f}',
+                                'Annualized PD (%)': '{:.2f}',
+                                'Retained loans': '{:,.0f}' if pretty_ints else '{:.0f}',
+                                'Retained origination amt': '{:,.2f}' if pretty_ints else '{:.2f}',
+                                'Retention (count) %': '{:.1f}',
+                                'Retention (amt) %':   '{:.1f}',
+                            })
+                            .hide(axis='index')
+                        )
+                        st.dataframe(styled, use_container_width=True, height=120)
+
+                    st.markdown(
+                        f"""
+                        <div style="
+                            background: {WB_LIGHT};
+                            border-radius: 12px;
+                            padding: 16px 20px;
+                            border: 1px solid {WB_BORDER};
+                            margin-top: 16px;
+                            font-size: 0.85rem;
+                            color: {WB_MUTED};
+                        ">
+                            <b style="color:{WB_TEXT};">How to read this</b><br/>
+                            Numeric filters are reported as one-sided thresholds (≤ or ≥) that you can
+                            map directly onto eligibility criteria in the sidebar. Categorical filters
+                            keep the lowest-PD categories first; the "Kept categories" count tells you
+                            how many of the original distinct values survive. Retention is measured
+                            against the current sidebar-filtered portfolio.
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+            else:
+                st.info(
+                    '👆 Set a target annualized PD, choose the calculation basis, '
+                    'and click **Generate recommendations** to scan every attribute '
+                    'for the filter that meets target with the highest retention.'
+                )
 
     else:
         # Empty state - no data loaded
