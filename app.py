@@ -2037,6 +2037,7 @@ def suggest_filters_for_target_pd(
     pd_by_amount: bool = False,
     n_quantiles: int = 21,
     min_retention: float = 0.05,
+    required_map: Optional[dict] = None,
 ) -> tuple:
     """For each candidate column, find the single eligibility filter that brings the
     portfolio's annualized PD at or below *target_ann_pd* while retaining the most
@@ -2046,11 +2047,17 @@ def suggest_filters_for_target_pd(
     across *n_quantiles* quantile cut-points. Categorical columns are searched by
     greedily excluding the highest-PD categories.
 
+    *required_map* — optional ``{col: {'type': 'numeric', 'lo': x, 'hi': y}}`` or
+    ``{col: {'type': 'categorical', 'values': [...]}}``. Suggestions on those
+    columns must preserve the listed range / values (the reported filter is
+    relaxed to the intersection so the constraint is not violated).
+
     Returns ``(feasible_df, partial_df, baseline)`` where *feasible_df* holds filters
     that reach target, *partial_df* holds the best progress per column when no filter
     reaches target, and *baseline* is ``(cum_pd, ann_pd, n_loans, orig_amt)`` of the
     input portfolio.
     """
+    required_map = required_map or {}
     baseline = _ann_pd_from_subset(loan_df, pd_by_amount)
     _, base_ann_pd, base_n, base_amt = baseline
 
@@ -2103,6 +2110,8 @@ def suggest_filters_for_target_pd(
             if best_progress is None or ap < best_progress[0]:
                 best_progress = (ap, row_dict)
 
+        col_constraint = required_map.get(col)
+
         if is_num:
             numeric_vals = pd.to_numeric(col_series, errors='coerce')
             if numeric_vals.dropna().empty:
@@ -2112,9 +2121,17 @@ def suggest_filters_for_target_pd(
             except Exception:
                 continue
 
-            # Upper threshold: keep col ≤ v
+            # Constraint: if a required range is given, threshold must preserve it.
+            req_lo = req_hi = None
+            if col_constraint and col_constraint.get('type') == 'numeric':
+                req_lo = col_constraint.get('lo')
+                req_hi = col_constraint.get('hi')
+
+            # Upper threshold: keep col ≤ v  → v must be ≥ req_hi
             for q, v in zip(qs, val_grid):
                 if q == 0 or np.isnan(v):
+                    continue
+                if req_hi is not None and v < req_hi:
                     continue
                 sub = loan_df[numeric_vals <= v]
                 cp, ap, rl, ra = _ann_pd_from_subset(sub, pd_by_amount)
@@ -2125,9 +2142,11 @@ def suggest_filters_for_target_pd(
                                       'Threshold value':     float(v)})
                 _consider(ap, rl, ra, row)
 
-            # Lower threshold: keep col ≥ v
+            # Lower threshold: keep col ≥ v  → v must be ≤ req_lo
             for q, v in zip(qs, val_grid):
                 if q == 1 or np.isnan(v):
+                    continue
+                if req_lo is not None and v > req_lo:
                     continue
                 sub = loan_df[numeric_vals >= v]
                 cp, ap, rl, ra = _ann_pd_from_subset(sub, pd_by_amount)
@@ -2158,13 +2177,22 @@ def suggest_filters_for_target_pd(
                 agg['cat_pd'] = np.where(agg['n'] > 0, agg['d'] / agg['n'], 0.0)
             agg = agg.sort_values('cat_pd', ascending=False)
 
+            # Constraint: if required values are listed, never drop them.
+            required_vals: set = set()
+            if col_constraint and col_constraint.get('type') == 'categorical':
+                required_vals = set(col_constraint.get('values') or [])
+
             ordered = list(agg.index)
             if len(ordered) < 2:
                 continue  # nothing to drop
 
-            # Iteratively drop highest-PD category and evaluate
+            # Iteratively drop highest-PD category (skipping required categories)
             for drop_n in range(len(ordered)):
-                kept_cats = ordered[drop_n:]
+                kept_cats = [c2 for c2 in ordered[drop_n:]]
+                # Always force required categories to be present
+                for rv in required_vals:
+                    if rv in ordered and rv not in kept_cats:
+                        kept_cats.append(rv)
                 if not kept_cats:
                     break
                 mask = tmp_col.isin(kept_cats)
@@ -2180,6 +2208,10 @@ def suggest_filters_for_target_pd(
                                       'Dropped categories': len(ordered) - len(kept_cats),
                                       'Kept values': kept_cats})
                 _consider(ap, rl, ra, row)
+                # Once only required categories remain, further dropping would
+                # violate the constraint — stop.
+                if required_vals and set(ordered[drop_n + 1:]).issubset(required_vals):
+                    break
 
         if best_feasible is not None:
             feasible_rows.append(best_feasible[1])
@@ -3543,6 +3575,74 @@ with right:
                     key='opt_min_retention',
                 )
 
+            # Constraints — lock columns / force required values
+            non_reserved_for_opt = [c for c in chosen_df_raw.columns
+                                    if str(c).strip() not in RESERVED_COLS]
+            locked_cols = st.multiselect(
+                '🔒 Lock columns (no filter will be proposed)',
+                non_reserved_for_opt,
+                default=[],
+                help='Attributes listed here are kept as-is — the optimizer will not '
+                     'suggest any filter on them. Example: pick "Industry" to keep all '
+                     'industries. Combine with the sidebar filters to pre-narrow the data.',
+                key='opt_locked_cols',
+            )
+
+            required_map: dict = {}
+            with st.expander('🔧 Advanced: force required values on specific columns', expanded=False):
+                st.caption(
+                    'Pick columns that can still be filtered, but only in ways that '
+                    'preserve the values / range you list here. Any suggestion that '
+                    'would drop a required value/range is rejected.'
+                )
+                constrainable = [c for c in non_reserved_for_opt if c not in locked_cols]
+                constrained_cols = st.multiselect(
+                    'Columns with required values/ranges',
+                    constrainable,
+                    default=[],
+                    key='opt_required_cols',
+                )
+                for c in constrained_cols:
+                    col_s = chosen_df_raw[c]
+                    if pd.api.types.is_numeric_dtype(col_s):
+                        vals = pd.to_numeric(col_s, errors='coerce').dropna()
+                        if vals.empty:
+                            st.info(f'No numeric values in {c}.')
+                            continue
+                        raw_min, raw_max = float(vals.min()), float(vals.max())
+                        is_int_like = (pd.api.types.is_integer_dtype(col_s)
+                                       or (raw_min.is_integer() and raw_max.is_integer()))
+                        if is_int_like:
+                            step, vmin, vmax = 1, int(raw_min), int(raw_max)
+                        else:
+                            step, vmin, vmax = None, raw_min, raw_max
+                        rc1, rc2 = st.columns(2)
+                        with rc1:
+                            lo_req = st.number_input(
+                                f'{c} — required Min',
+                                value=vmin, step=step,
+                                key=f'opt_req_lo_{c}',
+                            )
+                        with rc2:
+                            hi_req = st.number_input(
+                                f'{c} — required Max',
+                                value=vmax, step=step,
+                                key=f'opt_req_hi_{c}',
+                            )
+                        required_map[c] = {'type': 'numeric', 'lo': float(lo_req), 'hi': float(hi_req)}
+                    else:
+                        unique_vals = sorted(
+                            [v for v in col_s.dropna().unique().tolist()],
+                            key=lambda x: str(x),
+                        )
+                        sel = st.multiselect(
+                            f'{c} — required values (must remain in any suggestion)',
+                            unique_vals,
+                            default=unique_vals,
+                            key=f'opt_req_vals_{c}',
+                        )
+                        required_map[c] = {'type': 'categorical', 'values': sel}
+
             run_opt = st.button('🚀 Generate recommendations', type='primary', key='opt_run')
 
             if run_opt:
@@ -3556,13 +3656,15 @@ with right:
                         )
                         candidate_cols = [c for c in loan_tbl.columns
                                           if c not in _LOAN_INTERNAL_COLS
-                                          and not str(c).startswith('__')]
+                                          and not str(c).startswith('__')
+                                          and c not in locked_cols]
                         feasible_df, partial_df, baseline = suggest_filters_for_target_pd(
                             loan_tbl,
                             target_ann_pd=target_pd_pct / 100.0,
                             candidate_cols=candidate_cols,
                             pd_by_amount=pd_by_amount_opt,
                             min_retention=min_retention_pct / 100.0,
+                            required_map=required_map,
                         )
                         combo = suggest_combo_filter(
                             loan_tbl,
@@ -3622,6 +3724,24 @@ with right:
                     """,
                     unsafe_allow_html=True
                 )
+
+                # Show active constraints, if any
+                if locked_cols or required_map:
+                    parts = []
+                    if locked_cols:
+                        parts.append(f"🔒 Locked: {', '.join(locked_cols)}")
+                    for c, rule in (required_map or {}).items():
+                        if rule.get('type') == 'numeric':
+                            parts.append(
+                                f"📐 {c} must keep [{rule.get('lo'):.4g}, {rule.get('hi'):.4g}]"
+                            )
+                        else:
+                            vals = rule.get('values') or []
+                            preview = ', '.join(str(v) for v in vals[:5])
+                            if len(vals) > 5:
+                                preview += f', … (+{len(vals) - 5} more)'
+                            parts.append(f"🏷️ {c} must include {{{preview}}}")
+                    st.caption('Active constraints — ' + ' • '.join(parts))
 
                 if on_target:
                     st.success(
