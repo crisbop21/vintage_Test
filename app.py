@@ -2567,6 +2567,70 @@ with right:
             unsafe_allow_html=True
         )
 
+        # Vintage exclusion filter (applies to all downstream analyses)
+        st.markdown(
+            f"""
+            <div style="
+                background: white;
+                border-radius: 12px;
+                padding: 16px 20px;
+                border: 1px solid {WB_BORDER};
+                margin-bottom: 16px;
+            ">
+                <div style="font-size: 0.85rem; font-weight: 600; color: {WB_TEXT}; margin-bottom: 4px;">
+                    📅 Vintage Exclusion (Optional)
+                </div>
+                <div style="font-size: 0.78rem; color: {WB_MUTED};">
+                    Drop specific vintage cohorts from the analysis (e.g. immature vintages
+                    or a stress period). The exclusion applies to every tab — Data Integrity,
+                    Summary Tables, Vintage Charts, and PD Optimizer.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        # Compute the vintage label for each loan using the currently selected granularity
+        try:
+            _od = pd.to_datetime(chosen_df_raw['Origination date'], errors='coerce')
+            _g = (vintage_granularity or 'Q').upper()
+            if _g == 'M':
+                _vintage_series = _od.dt.to_period('M').astype(str)
+            elif _g == 'H':
+                _half = ((_od.dt.month - 1) // 6 + 1).astype('Int64')
+                _vintage_series = (_od.dt.year.astype('Int64').astype(str)
+                                   + 'H' + _half.astype(str))
+            elif _g == 'Y':
+                _vintage_series = _od.dt.year.astype('Int64').astype(str)
+            else:
+                _vintage_series = _od.dt.to_period('Q').astype(str)
+            _all_vintages = sorted(
+                v for v in _vintage_series.dropna().unique()
+                if str(v) not in ('NaT', '<NA>', 'nan')
+            )
+        except Exception:
+            _all_vintages = []
+            _vintage_series = pd.Series(dtype='object')
+
+        excluded_vintages = st.multiselect(
+            '🗑️ Vintages to exclude',
+            _all_vintages,
+            default=[],
+            help='Loans originated in the selected vintage cohorts will be removed '
+                 'before any analysis. Vintage labels follow the "Vintage Grouping" '
+                 'granularity selected above.',
+            key='excluded_vintages',
+        )
+
+        if excluded_vintages and not _vintage_series.empty:
+            keep_mask = ~_vintage_series.isin(excluded_vintages)
+            chosen_df_raw = chosen_df_raw.loc[keep_mask]
+            st.caption(
+                f'📅 Excluding {len(excluded_vintages)} vintage(s): '
+                f'{", ".join(str(v) for v in excluded_vintages)} — '
+                f'{len(chosen_df_raw):,} rows remain.'
+            )
+
         # Segmentation filter with card styling
         st.markdown(
             f"""
