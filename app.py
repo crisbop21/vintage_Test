@@ -9,10 +9,12 @@ import os
 os.environ["NUMEXPR_MAX_THREADS"] = "8"
 
 import gc
+import logging
 import math
 import hashlib
 import textwrap
 import re
+import traceback
 from io import BytesIO
 from typing import Optional, Callable
 
@@ -27,6 +29,27 @@ from matplotlib.backends.backend_pdf import PdfPages
 import plotly.graph_objects as go
 from plotly.colors import hex_to_rgb, qualitative, sequential
 import streamlit as st
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Logging — prints to stdout which Streamlit Cloud captures in "Manage app" logs
+# ──────────────────────────────────────────────────────────────────────────────
+logging.basicConfig(
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    level=logging.INFO,
+    force=True,
+)
+logger = logging.getLogger("vintage_app")
+
+def _log_resource_usage(label: str = ""):
+    """Log memory usage so crashes leave a trail in Streamlit Cloud logs."""
+    try:
+        import resource
+        mem_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024  # Linux: KB → MB
+        logger.info("MEMORY %s — RSS %.0f MB", label, mem_mb)
+    except Exception:
+        pass
+
+_log_resource_usage("startup")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Smart cache decorator: avoids "missing ScriptRunContext … bare mode" spam
@@ -814,6 +837,7 @@ def _df_key(df: pd.DataFrame) -> str:
 
 @cache_data_smart(show_spinner=False, max_entries=2, hash_funcs={pd.DataFrame: _df_key})
 def prepare_base_cached(raw_df: pd.DataFrame, vintage_granularity: str = 'Q') -> pd.DataFrame:
+    logger.info("prepare_base_cached: %d rows input", len(raw_df))
     dfn = normalize_columns(raw_df)
     dfn = ensure_types(dfn)
     dfn = add_vintage_mob(dfn, granularity=vintage_granularity)
@@ -824,6 +848,7 @@ def prepare_base_cached(raw_df: pd.DataFrame, vintage_granularity: str = 'Q') ->
             dfn[c] = dfn[c].astype('float32')
     dfn = dfn.drop_duplicates(subset=['Loan ID','Observation date'], keep='last')
     dfn = dfn.sort_values(['Loan ID','Observation date'], kind='mergesort')
+    _log_resource_usage("after prepare_base_cached")
     gc.collect()
     return dfn
 
@@ -2364,6 +2389,16 @@ with st.sidebar:
 
     st.markdown("---")
 
+    # Live memory indicator
+    try:
+        import resource
+        _mem_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+        _mem_color = WB_SUCCESS if _mem_mb < 700 else ("#F59E0B" if _mem_mb < 900 else "#EF4444")
+        st.caption(f'Memory: **{_mem_mb:,.0f} MB** <span style="color:{_mem_color};">●</span>',
+                   unsafe_allow_html=True)
+    except Exception:
+        pass
+
 # ──────────────────────────────────────────────────────────────────────────────
 # UI - MAIN CONTENT
 # ──────────────────────────────────────────────────────────────────────────────
@@ -2511,12 +2546,20 @@ with left:
 
         if st.button('🚀 Load Dataset', type='primary', use_container_width=True):
             with st.status('Loading dataset...', expanded=True) as status:
-                st.write("📖 Reading Excel file...")
-                df_full = load_full(uploaded.getvalue(), sheet=sheet, header=header_row - 1)
-                st.write(f"✅ Loaded {len(df_full):,} rows and {len(df_full.columns)} columns")
-                st.session_state['df_full'] = df_full
-                gc.collect()
-                status.update(label='✅ Dataset loaded successfully!', state='complete')
+                try:
+                    st.write("📖 Reading Excel file...")
+                    logger.info("Loading file: %s (%.2f MB)", uploaded.name, size_mb)
+                    df_full = load_full(uploaded.getvalue(), sheet=sheet, header=header_row - 1)
+                    logger.info("Loaded %d rows x %d cols", len(df_full), len(df_full.columns))
+                    _log_resource_usage("after load_full")
+                    st.write(f"✅ Loaded {len(df_full):,} rows and {len(df_full.columns)} columns")
+                    st.session_state['df_full'] = df_full
+                    gc.collect()
+                    status.update(label='✅ Dataset loaded successfully!', state='complete')
+                except Exception:
+                    logger.exception("CRASH during dataset load")
+                    status.update(label='❌ Load failed', state='error')
+                    st.error(f"Failed to load file:\n```\n{traceback.format_exc()}\n```")
 with right:
     if st.session_state['df_full'] is not None:
         chosen_df_raw = st.session_state['df_full']
@@ -2792,13 +2835,23 @@ with right:
 
             if run_checks:
                 with st.status('🔄 Analyzing data quality...', expanded=True) as status:
-                    st.write("Validating data schema...")
-                    st.write("Checking date consistency...")
-                    st.write("Analyzing value ranges...")
-                    summary, issues_df, vintage_issues_df, disappeared_df = run_integrity_checks(
-                        chosen_df_raw, dpd_threshold=dpd_threshold,
-                        vintage_granularity=vintage_granularity)
-                    status.update(label='✅ Analysis complete!', state='complete')
+                    try:
+                        st.write("Validating data schema...")
+                        st.write("Checking date consistency...")
+                        st.write("Analyzing value ranges...")
+                        logger.info("Running integrity checks (%d rows)", len(chosen_df_raw))
+                        _log_resource_usage("before integrity_checks")
+                        summary, issues_df, vintage_issues_df, disappeared_df = run_integrity_checks(
+                            chosen_df_raw, dpd_threshold=dpd_threshold,
+                            vintage_granularity=vintage_granularity)
+                        _log_resource_usage("after integrity_checks")
+                        status.update(label='✅ Analysis complete!', state='complete')
+                    except Exception:
+                        logger.exception("CRASH during integrity checks")
+                        status.update(label='❌ Analysis failed', state='error')
+                        st.error(f"Integrity check error:\n```\n{traceback.format_exc()}\n```")
+                        summary = {'fatal': 'Unexpected error — see details above'}
+                        issues_df = vintage_issues_df = disappeared_df = pd.DataFrame()
 
                 if 'fatal' in summary:
                     st.error(f"❌ Critical Error: {summary['fatal']}")
@@ -3100,6 +3153,7 @@ with right:
                         use_container_width=False
                     )
                 except Exception as e:
+                    logger.exception("CRASH in vintage default summary")
                     st.error(f'❌ Could not compute vintage default summary: {e}')
 
             # ── Sub-tab: PD Segmentation Analysis ─────────────────────────
@@ -3335,6 +3389,7 @@ with right:
                             key='seg_csv_download',
                         )
                     except Exception as e:
+                        logger.exception("CRASH in segment PD summary")
                         st.error(f'❌ Could not compute segment PD summary: {e}')
 
         # ════════════════════════════════════════════════════════════════════
@@ -3598,6 +3653,7 @@ with right:
                                     pass
 
                 except Exception as e:
+                    logger.exception("CRASH in chart generation")
                     st.error(f'❌ Chart generation failed: {e}')
 
         # ════════════════════════════════════════════════════════════════════
@@ -3750,6 +3806,7 @@ with right:
                         )
                         status.update(label='✅ Scan complete.', state='complete')
                     except Exception as e:
+                        logger.exception("CRASH in PD optimizer")
                         status.update(label=f'❌ Optimizer failed: {e}', state='error')
                         feasible_df = partial_df = pd.DataFrame()
                         baseline = (np.nan, np.nan, 0, 0.0)

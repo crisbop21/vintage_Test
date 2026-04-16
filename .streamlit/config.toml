@@ -7,3 +7,6 @@ gatherUsageStats = false
 
 [runner]
 fastReruns = true
+
+[logger]
+level = "info"
