@@ -8,6 +8,7 @@
 import os
 os.environ["NUMEXPR_MAX_THREADS"] = "8"
 
+import gc
 import math
 import hashlib
 import textwrap
@@ -737,11 +738,12 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
         df['Current amount'] = np.nan
     return df
 
-def ensure_types(df: pd.DataFrame) -> pd.DataFrame:
+def ensure_types(df: pd.DataFrame, keep_originals: bool = False) -> pd.DataFrame:
     df = df.copy()
-    for c in ['Origination date','Observation date','Maturity date','Days past due',
-              'Origination amount','Current amount']:
-        df[f'__orig_{c}'] = df[c]
+    if keep_originals:
+        for c in ['Origination date','Observation date','Maturity date','Days past due',
+                  'Origination amount','Current amount']:
+            df[f'__orig_{c}'] = df[c]
     for c in ['Origination date','Observation date','Maturity date']:
         if not pd.api.types.is_datetime64_any_dtype(df[c]):
             df[c] = pd.to_datetime(df[c], errors='coerce')
@@ -810,7 +812,7 @@ def _df_key(df: pd.DataFrame) -> str:
     m.update(h.tobytes()); m.update(str(df.shape).encode()); m.update(",".join(map(str, sample.columns)).encode())
     return m.hexdigest()
 
-@cache_data_smart(show_spinner=False, hash_funcs={pd.DataFrame: _df_key})
+@cache_data_smart(show_spinner=False, max_entries=2, hash_funcs={pd.DataFrame: _df_key})
 def prepare_base_cached(raw_df: pd.DataFrame, vintage_granularity: str = 'Q') -> pd.DataFrame:
     dfn = normalize_columns(raw_df)
     dfn = ensure_types(dfn)
@@ -822,9 +824,10 @@ def prepare_base_cached(raw_df: pd.DataFrame, vintage_granularity: str = 'Q') ->
             dfn[c] = dfn[c].astype('float32')
     dfn = dfn.drop_duplicates(subset=['Loan ID','Observation date'], keep='last')
     dfn = dfn.sort_values(['Loan ID','Observation date'], kind='mergesort')
+    gc.collect()
     return dfn
 
-@cache_data_smart(show_spinner=False)
+@cache_data_smart(show_spinner=False, max_entries=1)
 def load_full(file_bytes: bytes, sheet: str, header: int):
     bio = BytesIO(file_bytes)
     return pd.read_excel(bio, sheet_name=sheet, header=header, engine='openpyxl')
@@ -1214,7 +1217,7 @@ def run_integrity_checks(df: pd.DataFrame, dpd_threshold: int, gap_days: int = 1
         dfn = normalize_columns(df)
     except KeyError as e:
         return {'fatal': str(e)}, pd.DataFrame(), pd.DataFrame()
-    dfn = ensure_types(dfn)
+    dfn = ensure_types(dfn, keep_originals=True)
 
     # Nulls + non-parsables
     for c in ['Loan ID','Origination date','Observation date','Maturity date',
@@ -1414,6 +1417,10 @@ def run_integrity_checks(df: pd.DataFrame, dpd_threshold: int, gap_days: int = 1
         summary['Date range (Maturity)']    = f"{dfn['Maturity date'].min().date()} → {dfn['Maturity date'].max().date()}"
     except Exception:
         pass
+
+    # Free intermediate DataFrames
+    del dfn, dfd, dfd_q
+    gc.collect()
 
     return summary, issues_df, vintage_issues_df, disappeared_df
 
@@ -2508,6 +2515,7 @@ with left:
                 df_full = load_full(uploaded.getvalue(), sheet=sheet, header=header_row - 1)
                 st.write(f"✅ Loaded {len(df_full):,} rows and {len(df_full.columns)} columns")
                 st.session_state['df_full'] = df_full
+                gc.collect()
                 status.update(label='✅ Dataset loaded successfully!', state='complete')
 with right:
     if st.session_state['df_full'] is not None:
