@@ -1109,13 +1109,22 @@ def plot_curves_percent_with_months(df_wide: pd.DataFrame,
     trace_mode = 'lines+markers' if show_markers else 'lines'
     marker_cfg = dict(size=4) if show_markers else None
 
+    def _fmt_compact(v: float) -> str:
+        v = float(v)
+        sign = '-' if v < 0 else ''
+        v = abs(v)
+        for unit, div in (('B', 1e9), ('M', 1e6), ('K', 1e3)):
+            if v >= div:
+                return f"{sign}{v / div:,.2f}{unit}"
+        return f"{sign}{v:,.0f}"
+
     fig = go.Figure()
     show_leg = show_legend and (df_wide.shape[1] <= legend_limit)
     for i, col in enumerate(df_wide.columns):
         label = str(col)
         if cohort_sizes and col in cohort_sizes:
             if pd_by_amount:
-                label = f"{col} ({cohort_sizes[col]:,.0f})"
+                label = f"{col} ({_fmt_compact(cohort_sizes[col])})"
             else:
                 label = f"{col} (n={int(cohort_sizes[col]):,})"
         trace_kwargs = dict(
@@ -1178,7 +1187,7 @@ def plot_curves_percent_with_months(df_wide: pd.DataFrame,
         height=chart_height,
         plot_bgcolor=bg_color,
         paper_bgcolor='white',
-        margin=dict(l=60, r=30, t=60, b=50),
+        margin=dict(l=70, r=180, t=60, b=50),
         font=dict(family='Inter, sans-serif'),
     )
 
