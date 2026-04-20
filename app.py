@@ -1091,16 +1091,40 @@ def plot_curves_percent_with_months(df_wide: pd.DataFrame,
             palette.append(f'rgb({ri},{gi},{bi})')
         return palette
 
-    palette_choice = palette.lower()
+    palette_choice = (palette or "").strip()
     base_color = base_color or st.get_option("theme.primaryColor") or "#1f77b4"
-    if palette_choice == "gradient":
-        palette_colors = _generate_palette(base_color, N)
-    elif palette_choice == "plotly":
-        palette_colors = qualitative.Plotly
-    elif palette_choice == "viridis":
-        palette_colors = sequential.Viridis
-    else:
-        palette_colors = qualitative.Plotly
+
+    # Hand-picked palettes. Qualitative palettes give the most distinguishable
+    # colors; sequential palettes encode an ordering (older → newer cohorts).
+    okabe_ito = ['#0072B2', '#E69F00', '#009E73', '#CC79A7',
+                 '#56B4E9', '#D55E00', '#F0E442', '#000000']
+    ibm_carbon = ['#6929C4', '#1192E8', '#005D5D', '#9F1853',
+                  '#FA4D56', '#570408', '#198038', '#002D9C',
+                  '#EE538B', '#B28600', '#009D9A', '#012749',
+                  '#8A3800', '#A56EFF']
+    corp_blues = ['#002244', '#003E7E', '#0057B7', '#1E88E5',
+                  '#42A5F5', '#64B5F6', '#90CAF9', '#BBDEFB']
+
+    palette_map = {
+        'gradient': lambda: _generate_palette(base_color, N),
+        'plotly': lambda: qualitative.Plotly,
+        'd3': lambda: qualitative.D3,
+        'tableau (t10)': lambda: qualitative.T10,
+        'bold': lambda: qualitative.Bold,
+        'dark24': lambda: qualitative.Dark24,
+        'light24': lambda: qualitative.Light24,
+        'set2': lambda: qualitative.Set2,
+        'pastel': lambda: qualitative.Pastel,
+        'safe (colorblind)': lambda: qualitative.Safe,
+        'okabe-ito (colorblind)': lambda: okabe_ito,
+        'ibm carbon': lambda: ibm_carbon,
+        'corporate blues': lambda: corp_blues,
+        'viridis': lambda: sequential.Viridis,
+        'cividis': lambda: sequential.Cividis,
+        'plasma': lambda: sequential.Plasma,
+        'blues': lambda: sequential.Blues,
+    }
+    palette_colors = palette_map.get(palette_choice.lower(), palette_map['plotly'])()
     if len(palette_colors) < N:
         times = int(np.ceil(N / len(palette_colors)))
         palette_colors = (palette_colors * times)[:N]
@@ -3430,7 +3454,30 @@ with right:
                         index=0,
                         help='Preset position. You can also click and drag the legend on the chart itself.',
                     )
-                    palette_option = st.selectbox('🎨 Color palette', ['Gradient', 'Plotly', 'Viridis'])
+                    palette_option = st.selectbox(
+                        '🎨 Color palette',
+                        [
+                            'Corporate Blues',
+                            'IBM Carbon',
+                            'Tableau (T10)',
+                            'D3',
+                            'Bold',
+                            'Dark24',
+                            'Set2',
+                            'Pastel',
+                            'Safe (colorblind)',
+                            'Okabe-Ito (colorblind)',
+                            'Plotly',
+                            'Light24',
+                            'Gradient',
+                            'Viridis',
+                            'Cividis',
+                            'Plasma',
+                            'Blues',
+                        ],
+                        index=0,
+                        help='Qualitative palettes (Corporate Blues, IBM Carbon, Tableau, D3, Bold, Dark24, Set2, Safe, Okabe-Ito) give the most distinguishable colors. Sequential palettes (Gradient, Viridis, Cividis, Plasma, Blues) encode an ordering across cohorts.',
+                    )
                     base_color = st.color_picker(
                         '🖌️ Base color',
                         value=WB_PRIMARY,
