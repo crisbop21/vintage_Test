@@ -1115,7 +1115,7 @@ def plot_curves_percent_with_months(df_wide: pd.DataFrame,
         label = str(col)
         if cohort_sizes and col in cohort_sizes:
             if pd_by_amount:
-                label = f"{col} (${cohort_sizes[col]:,.0f})"
+                label = f"{col} ({cohort_sizes[col]:,.0f})"
             else:
                 label = f"{col} (n={int(cohort_sizes[col]):,})"
         trace_kwargs = dict(
@@ -2360,7 +2360,7 @@ with st.sidebar:
 # ──────────────────────────────────────────────────────────────────────────────
 # UI - MAIN CONTENT
 # ──────────────────────────────────────────────────────────────────────────────
-left, right = st.columns([1, 3], gap="large")
+left, right = st.columns([1, 5], gap="large")
 
 with left:
     # Settings Card
@@ -3351,116 +3351,82 @@ with right:
                 unsafe_allow_html=True
             )
 
-            col_chart, col_settings = st.columns([3, 1], gap="large")
+            col_settings = st.expander("⚙️ Chart Settings", expanded=False)
+            col_chart = st.container()
 
             with col_settings:
-                # Settings panel card
-                st.markdown(
-                    f"""
-                    <div style="
-                        background: white;
-                        border-radius: 12px;
-                        padding: 20px;
-                        border: 1px solid {WB_BORDER};
-                        margin-bottom: 16px;
-                    ">
-                        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 16px;">
-                            <div style="
-                                background: linear-gradient(135deg, {WB_PRIMARY} 0%, {WB_SECONDARY} 100%);
-                                width: 32px;
-                                height: 32px;
-                                border-radius: 8px;
-                                display: flex;
-                                align-items: center;
-                                justify-content: center;
-                            ">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
-                                    <line x1="4" y1="21" x2="4" y2="14"></line>
-                                    <line x1="4" y1="10" x2="4" y2="3"></line>
-                                    <line x1="12" y1="21" x2="12" y2="12"></line>
-                                    <line x1="12" y1="8" x2="12" y2="3"></line>
-                                    <line x1="20" y1="21" x2="20" y2="16"></line>
-                                    <line x1="20" y1="12" x2="20" y2="3"></line>
-                                    <line x1="1" y1="14" x2="7" y2="14"></line>
-                                    <line x1="9" y1="8" x2="15" y2="8"></line>
-                                    <line x1="17" y1="16" x2="23" y2="16"></line>
-                                </svg>
-                            </div>
-                            <span style="font-weight: 600; color: {WB_TEXT};">Chart Settings</span>
-                        </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
+                set_time, set_pd, set_curve, set_visual, set_layout = st.columns(5, gap="medium")
 
-                granularity = st.selectbox('📅 Time Granularity', ['Quarterly (QOB)', 'Monthly (MOB)'], index=0)
-                gran_key = 'QOB' if 'QOB' in granularity else 'MOB'
-                max_months_show = st.slider('📏 Max Months to Display', min_value=12, max_value=180, value=60, step=6)
+                with set_time:
+                    st.markdown("**Time**")
+                    granularity = st.selectbox('📅 Time Granularity', ['Quarterly (QOB)', 'Monthly (MOB)'], index=0)
+                    gran_key = 'QOB' if 'QOB' in granularity else 'MOB'
+                    max_months_show = st.slider('📏 Max Months to Display', min_value=12, max_value=180, value=60, step=6)
 
-                st.markdown("---")
-                st.markdown("**PD Calculation**")
-                pd_calc_method_chart = st.selectbox(
-                    '📐 PD Method',
-                    ['By Loan Count', 'By Amount (Current / Origination)'],
-                    index=0,
-                    help='By Loan Count: defaulted loans / total loans. '
-                         'By Amount: sum of Current Amount at default date / sum of Origination Amount.',
-                    key='pd_calc_method_chart',
-                )
-                pd_by_amount_chart = pd_calc_method_chart == 'By Amount (Current / Origination)'
+                with set_pd:
+                    st.markdown("**PD Calculation**")
+                    pd_calc_method_chart = st.selectbox(
+                        '📐 PD Method',
+                        ['By Loan Count', 'By Amount (Current / Origination)'],
+                        index=0,
+                        help='By Loan Count: defaulted loans / total loans. '
+                             'By Amount: sum of Current Amount at default date / sum of Origination Amount.',
+                        key='pd_calc_method_chart',
+                    )
+                    pd_by_amount_chart = pd_calc_method_chart == 'By Amount (Current / Origination)'
 
-                st.markdown("---")
-                st.markdown("**Curve Processing**")
-                smooth_curves = st.checkbox('🔄 Smooth curves', value=True)
-                force_monotone = st.checkbox('📈 Force monotone (cummax)', value=True)
-                cure_adjusted = st.checkbox(
-                    '💊 Cure-adjusted mode',
-                    value=False,
-                    help='Use current DPD status at each snapshot instead of cumulative ever-defaulted flag.'
-                )
-                exclude_flagged = st.checkbox(
-                    '🚫 Exclude flagged rows',
-                    value=False,
-                    help='Exclude rows flagged by integrity checks. Run integrity checks first.'
-                )
+                with set_curve:
+                    st.markdown("**Curve Processing**")
+                    smooth_curves = st.checkbox('🔄 Smooth curves', value=True)
+                    force_monotone = st.checkbox('📈 Force monotone (cummax)', value=True)
+                    cure_adjusted = st.checkbox(
+                        '💊 Cure-adjusted mode',
+                        value=False,
+                        help='Use current DPD status at each snapshot instead of cumulative ever-defaulted flag.'
+                    )
+                    exclude_flagged = st.checkbox(
+                        '🚫 Exclude flagged rows',
+                        value=False,
+                        help='Exclude rows flagged by integrity checks. Run integrity checks first.'
+                    )
 
-                st.markdown("---")
-                st.markdown("**Visual Options**")
-                show_legend = st.checkbox('📋 Show legend', value=True)
-                palette_option = st.selectbox('🎨 Color palette', ['Gradient', 'Plotly', 'Viridis'])
-                base_color = st.color_picker(
-                    '🖌️ Base color',
-                    value=WB_PRIMARY,
-                    help='Used when Gradient palette is selected.'
-                )
-                line_width = st.slider('✏️ Line width', min_value=1, max_value=5, value=2)
-                line_style = st.selectbox(
-                    '〰️ Line style',
-                    ['solid', 'dash', 'dot', 'dashdot'],
-                    index=0,
-                )
-                show_markers = st.checkbox('🔘 Show data-point markers', value=False)
+                with set_visual:
+                    st.markdown("**Visual Options**")
+                    show_legend = st.checkbox('📋 Show legend', value=True)
+                    palette_option = st.selectbox('🎨 Color palette', ['Gradient', 'Plotly', 'Viridis'])
+                    base_color = st.color_picker(
+                        '🖌️ Base color',
+                        value=WB_PRIMARY,
+                        help='Used when Gradient palette is selected.'
+                    )
+                    line_width = st.slider('✏️ Line width', min_value=1, max_value=5, value=2)
+                    line_style = st.selectbox(
+                        '〰️ Line style',
+                        ['solid', 'dash', 'dot', 'dashdot'],
+                        index=0,
+                    )
+                    show_markers = st.checkbox('🔘 Show data-point markers', value=False)
 
-                st.markdown("---")
-                st.markdown("**Layout & Axes**")
-                chart_title = st.text_input(
-                    '📝 Custom chart title',
-                    value='',
-                    help='Leave blank to use the auto-generated title.',
-                )
-                chart_height = st.slider('📐 Chart height (px)', min_value=350, max_value=900, value=550, step=50)
-                title_font_size = st.slider('🔤 Title font size', min_value=12, max_value=28, value=18, step=1)
-                axis_font_size = st.slider('🔡 Axis label size', min_value=9, max_value=18, value=13, step=1)
-                show_grid = st.checkbox('🔲 Show gridlines', value=True)
-                y_axis_max = st.number_input(
-                    '📊 Y-axis max (%)',
-                    min_value=0.0,
-                    max_value=100.0,
-                    value=0.0,
-                    step=1.0,
-                    help='Set to 0 for auto-scale.',
-                )
-                bg_color = st.color_picker('🎨 Plot background', value='#FFFFFF')
+                with set_layout:
+                    st.markdown("**Layout & Axes**")
+                    chart_title = st.text_input(
+                        '📝 Custom chart title',
+                        value='',
+                        help='Leave blank to use the auto-generated title.',
+                    )
+                    chart_height = st.slider('📐 Chart height (px)', min_value=350, max_value=900, value=650, step=50)
+                    title_font_size = st.slider('🔤 Title font size', min_value=12, max_value=28, value=18, step=1)
+                    axis_font_size = st.slider('🔡 Axis label size', min_value=9, max_value=18, value=13, step=1)
+                    show_grid = st.checkbox('🔲 Show gridlines', value=True)
+                    y_axis_max = st.number_input(
+                        '📊 Y-axis max (%)',
+                        min_value=0.0,
+                        max_value=100.0,
+                        value=0.0,
+                        step=1.0,
+                        help='Set to 0 for auto-scale.',
+                    )
+                    bg_color = st.color_picker('🎨 Plot background', value='#FFFFFF')
 
             with col_chart:
                 try:
