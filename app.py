@@ -1062,7 +1062,8 @@ def plot_curves_percent_with_months(df_wide: pd.DataFrame,
                                     show_grid: bool = True,
                                     y_axis_max: float = 0.0,
                                     bg_color: str = "#FFFFFF",
-                                    pd_by_amount: bool = False):
+                                    pd_by_amount: bool = False,
+                                    legend_position: str = "Right (outside)"):
     if df_wide.empty:
         st.info('Not enough data to plot.')
         return None
@@ -1154,6 +1155,33 @@ def plot_curves_percent_with_months(df_wide: pd.DataFrame,
     if y_axis_max > 0:
         yaxis_cfg['range'] = [0, y_axis_max / 100.0]
 
+    _legend_base = dict(
+        bgcolor='rgba(255,255,255,0.95)',
+        bordercolor='#E2E8F0',
+        borderwidth=1,
+        font=dict(color='#002244', size=11, family='Inter, sans-serif'),
+        title=dict(text='Vintage Cohorts', font=dict(size=12, color='#64748B')),
+    )
+    _pos = (legend_position or "Right (outside)").strip().lower()
+    if _pos == "right (outside)":
+        _legend_cfg = {**_legend_base, 'orientation': 'v', 'x': 1.02, 'xanchor': 'left', 'y': 1, 'yanchor': 'top'}
+        _margin_cfg = dict(l=70, r=180, t=60, b=50)
+    elif _pos == "right (inside)":
+        _legend_cfg = {**_legend_base, 'orientation': 'v', 'x': 0.99, 'xanchor': 'right', 'y': 0.99, 'yanchor': 'top'}
+        _margin_cfg = dict(l=70, r=40, t=60, b=50)
+    elif _pos == "left (inside)":
+        _legend_cfg = {**_legend_base, 'orientation': 'v', 'x': 0.01, 'xanchor': 'left', 'y': 0.99, 'yanchor': 'top'}
+        _margin_cfg = dict(l=70, r=40, t=60, b=50)
+    elif _pos == "top":
+        _legend_cfg = {**_legend_base, 'orientation': 'h', 'x': 0.5, 'xanchor': 'center', 'y': 1.08, 'yanchor': 'bottom'}
+        _margin_cfg = dict(l=70, r=40, t=90, b=50)
+    elif _pos == "bottom":
+        _legend_cfg = {**_legend_base, 'orientation': 'h', 'x': 0.5, 'xanchor': 'center', 'y': -0.18, 'yanchor': 'top'}
+        _margin_cfg = dict(l=70, r=40, t=60, b=110)
+    else:
+        _legend_cfg = {**_legend_base, 'orientation': 'v', 'x': 1.02, 'xanchor': 'left', 'y': 1, 'yanchor': 'top'}
+        _margin_cfg = dict(l=70, r=180, t=60, b=50)
+
     fig.update_layout(
         title=dict(
             text=title,
@@ -1177,17 +1205,11 @@ def plot_curves_percent_with_months(df_wide: pd.DataFrame,
             font=dict(size=12, color='#002244', family='Inter, sans-serif')
         ),
         showlegend=show_leg,
-        legend=dict(
-            bgcolor='rgba(255,255,255,0.95)',
-            bordercolor='#E2E8F0',
-            borderwidth=1,
-            font=dict(color='#002244', size=11, family='Inter, sans-serif'),
-            title=dict(text='Vintage Cohorts', font=dict(size=12, color='#64748B')),
-        ),
+        legend=_legend_cfg,
         height=chart_height,
         plot_bgcolor=bg_color,
         paper_bgcolor='white',
-        margin=dict(l=70, r=180, t=60, b=50),
+        margin=_margin_cfg,
         font=dict(family='Inter, sans-serif'),
     )
 
@@ -3402,6 +3424,12 @@ with right:
                 with set_visual:
                     st.markdown("**Visual Options**")
                     show_legend = st.checkbox('📋 Show legend', value=True)
+                    legend_position = st.selectbox(
+                        '📍 Legend position',
+                        ['Right (outside)', 'Right (inside)', 'Left (inside)', 'Top', 'Bottom'],
+                        index=0,
+                        help='Preset position. You can also click and drag the legend on the chart itself.',
+                    )
                     palette_option = st.selectbox('🎨 Color palette', ['Gradient', 'Plotly', 'Viridis'])
                     base_color = st.color_picker(
                         '🖌️ Base color',
@@ -3521,13 +3549,15 @@ with right:
                                 y_axis_max=y_axis_max,
                                 bg_color=bg_color,
                                 pd_by_amount=pd_by_amount_chart,
+                                legend_position=legend_position,
                             )
                             prog_bar.progress(1.0, text="✅ Chart ready")
 
                             st.plotly_chart(fig, use_container_width=True, config={
                                 'displayModeBar': True,
                                 'displaylogo': False,
-                                'modeBarButtonsToRemove': ['lasso2d', 'select2d']
+                                'modeBarButtonsToRemove': ['lasso2d', 'select2d'],
+                                'edits': {'legendPosition': True, 'annotationPosition': True},
                             })
 
                             # Export section
